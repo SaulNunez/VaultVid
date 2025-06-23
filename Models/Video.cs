@@ -8,5 +8,6 @@ public class Video
     public string Description { get; set; }
     public string Bucket { get; set; }
     public string Tags { get; set; }
+    public string ThumbnailLocation { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
 }

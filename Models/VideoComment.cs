@@ -8,5 +8,5 @@ public class VideoComment
     public string Text { get; set; }
     public string? VideoPosition { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
-    public Video video { get; set; }
+    public Video Video { get; set; }
 }
