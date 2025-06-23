@@ -4,6 +4,7 @@ using VideoHostingService.Models;
 using VideoHostingService.Services;
 using Microsoft.AspNetCore.Identity;
 using VideoHostingService.Models.Identity;
+using Minio;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -13,6 +14,19 @@ builder.Services.AddRazorComponents()
 
 builder.Services.AddDbContext<VideoServiceContext>(
     c => c.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+builder.Services.AddDbContext<IdentityDbContext>(
+    c => c.UseNpgsql(builder.Configuration.GetConnectionString("IdentityDbContextConnection"))
+);
+
+var endpoint = builder.Configuration.GetSection("ObjectStorage")["Endpoint"];
+var accessKey = builder.Configuration.GetSection("ObjectStorage")["AccessKey"];
+var secretKey = builder.Configuration.GetSection("ObjectStorage")["SecretKey"];
+
+builder.Services.AddMinio(configureClient => configureClient
+            .WithEndpoint(endpoint)
+            .WithCredentials(accessKey, secretKey)
+            .Build());
 
 builder.Services.AddDefaultIdentity<IdentityUser>(options => options.SignIn.RequireConfirmedAccount = true).AddEntityFrameworkStores<IdentityDbContext>();
 
