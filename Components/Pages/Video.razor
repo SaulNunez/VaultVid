@@ -1,0 +1,32 @@
+@page "/video/{Id:string}"
+@attribute [StreamRendering]
+@inject VideoHostingService.Services.IVideoService VideoService
+
+@if(video == null)
+{
+    <p>Video not found.</p>
+}
+else
+{
+    <h1>@video.Title</h1>
+    <div id="target"></div>
+    <div>
+        <p>@video.Description</p>
+    </div>
+    @foreach(var comment in video.Comments){
+        <Comment VideoComment="comment" />
+    }
+}
+
+@code {
+    [Parameter]
+    public string Id { get; set; } = "";
+
+    private Models.Video? video;
+
+    protected override async Task OnInitializedAsync()
+    {
+        video = await VideoService.GetVideo(Id);
+    }
+}
+    
