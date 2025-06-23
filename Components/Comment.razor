@@ -1,0 +1,13 @@
+@using VideoHostingService.Models
+
+@inject VideoHostingService.Services.IHumanTimeService HumanTimeService
+
+<div>
+    <p>Joe Doe <span>-</span> @HumanTimeService.PrettyTimeDifference(VideoComment.CreatedAt.LocalDateTime, DateTime.Now) </p>
+    <p>@VideoComment.Text</p>
+</div>
+
+@code{
+    [Parameter]
+    public VideoComment VideoComment { get; set; }
+}
