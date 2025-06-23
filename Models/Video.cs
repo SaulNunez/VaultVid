@@ -10,4 +10,6 @@ public class Video
     public string Tags { get; set; }
     public string ThumbnailLocation { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
+
+    public List<VideoComment> Comments { get; set; } 
 }
