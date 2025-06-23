@@ -1,7 +1,21 @@
 ﻿@page "/"
+@inject VideoHostingService.Services.IVideoService VideoService
 
 <PageTitle>Home</PageTitle>
 
-<h1>Hello, world!</h1>
+@foreach(var video in videos){
+        <p>{@video.Title}</p>
+}
 
-Welcome to your new app.
+@code {
+    private List<Models.Video> videos;
+    
+    protected override async Task OnInitializedAsync()
+    {
+        videos = await VideoService.GetVideos();
+    }
+
+    void OpenVideo(){
+
+    }
+}
