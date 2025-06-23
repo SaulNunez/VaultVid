@@ -1,10 +1,19 @@
+using Microsoft.EntityFrameworkCore;
 using VideoHostingService.Components;
+using VideoHostingService.Models;
+using VideoHostingService.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
+
+builder.Services.AddDbContext<VideoServiceContext>(
+    c => c.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+builder.Services.AddScoped<IVideoService, VideoService>();
+builder.Services.AddTransient<IHumanTimeService, HumanTimeService>();
 
 var app = builder.Build();
 
