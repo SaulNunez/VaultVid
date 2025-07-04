@@ -8,7 +8,7 @@
 }
 else
 {
-    <h1>@video.Title</h1>
+    <h1 class="video_item_title">@video.Title</h1>
     <div id="target"></div>
     <div>
         <p>@video.Description</p>
@@ -26,7 +26,15 @@ else
 
     protected override async Task OnInitializedAsync()
     {
-        video = await VideoService.GetVideo(Id);
+        try
+        {
+            var videoId = Guid.Parse(Id);
+            video = VideoService.GetVideoById(videoId);
+        }
+        catch(Exception e)
+        {
+
+        }
     }
 }
     
