@@ -5,6 +5,8 @@ using VideoHostingService.Services;
 using Microsoft.AspNetCore.Identity;
 using VideoHostingService.Models.Identity;
 using Minio;
+using VideoHostingService.Utilities;
+using VideoHostingService.VideoUploads;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -15,7 +17,7 @@ builder.Services.AddRazorComponents()
 builder.Services.AddDbContext<VideoServiceContext>(
     c => c.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
 
-builder.Services.AddDbContext<IdentityDbContext>(
+builder.Services.AddDbContext<ApplicationDbContext>(
     c => c.UseNpgsql(builder.Configuration.GetConnectionString("IdentityDbContextConnection"))
 );
 
@@ -28,10 +30,15 @@ builder.Services.AddMinio(configureClient => configureClient
             .WithCredentials(accessKey, secretKey)
             .Build());
 
-builder.Services.AddDefaultIdentity<IdentityUser>(options => options.SignIn.RequireConfirmedAccount = true).AddEntityFrameworkStores<IdentityDbContext>();
+builder.Services.AddDefaultIdentity<IdentityUser>(options => options.SignIn.RequireConfirmedAccount = true).AddEntityFrameworkStores<ApplicationDbContext>();
 
-builder.Services.AddScoped<IVideoService, VideoService>();
+builder.Services.AddSingleton<IVideoService, VideoService>();
+builder.Services.AddSingleton<IVideoLikeService, VideoLikeService>();
+builder.Services.AddSingleton<IVideoCommentService, VideoCommentService>();
+builder.Services.AddSingleton<ICommentLikeService, CommentLikeService>();
+
 builder.Services.AddTransient<IHumanTimeService, HumanTimeService>();
+builder.Services.AddScoped<IVideoUploadService, VideoUploadService>();
 
 var app = builder.Build();
 

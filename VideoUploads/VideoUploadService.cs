@@ -3,7 +3,7 @@ using Minio.DataModel.Args;
 using Minio.Exceptions;
 using VideoHostingService.Models;
 
-namespace VideoHostingService.Services;
+namespace VideoHostingService.VideoUploads;
 
 public interface IVideoUploadService
 {

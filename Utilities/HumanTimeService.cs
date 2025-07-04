@@ -1,4 +1,4 @@
-namespace VideoHostingService.Services;
+namespace VideoHostingService.Utilities;
 
 public interface IHumanTimeService
 {

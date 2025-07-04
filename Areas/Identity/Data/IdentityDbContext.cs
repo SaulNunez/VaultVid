@@ -4,9 +4,15 @@ using Microsoft.EntityFrameworkCore;
 
 namespace VideoHostingService.Models.Identity;
 
-public class IdentityDbContext : IdentityDbContext<IdentityUser>
+public class ApplicationDbContext : IdentityDbContext<IdentityUser>
 {
-    public IdentityDbContext(DbContextOptions<IdentityDbContext> options)
+    public DbSet<Video> Videos { get; set; }
+    public DbSet<VideoComment> VideoComments { get; set; }
+    public DbSet<VideoLike> VideoLikes { get; set; }
+    public DbSet<CommentLike> CommentLikes { get; set; }
+    public DbSet <Playlist> Playlists { get; set; }
+
+    public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
         : base(options)
     {
     }

@@ -9,4 +9,6 @@ public class VideoComment
     public string? VideoPosition { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public Video Video { get; set; }
+
+    public List<CommentLike> CommentLikes { get; set; }
 }
