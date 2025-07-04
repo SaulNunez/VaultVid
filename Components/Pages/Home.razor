@@ -1,18 +1,30 @@
 ﻿@page "/"
 @inject VideoHostingService.Services.IVideoService VideoService
 
-<PageTitle>Home</PageTitle>
+@if(videos == null)
+{
+    <p>Something went wrong</p>
+}
+else 
+{
+    <PageTitle>Home</PageTitle>
 
-@foreach(var video in videos){
-        <p>{@video.Title}</p>
+    <div class="video_grid">
+        @foreach(var video in videos){
+        <div class="video_big_card">
+            <img class="video_big_card_thumbnail" src="{@video.ThumbnailLocation}" />
+            <p class="video_big_card_title">{@video.Title}</p>
+        </div>
+        }
+    </div>
 }
 
 @code {
-    private List<Models.Video> videos;
+    private List<Models.Video>? videos;
     
     protected override async Task OnInitializedAsync()
     {
-        videos = await VideoService.GetVideos();
+        videos = await VideoService.GetVideos(50);
     }
 
     void OpenVideo(){
