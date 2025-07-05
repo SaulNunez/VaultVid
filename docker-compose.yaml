@@ -44,6 +44,13 @@ services:
       - minio
     networks:
       - backend
+  rabbitmq:
+    image: rabbitmq:latest
+    hostname: rabbitmq
+    ports:
+      - "5672:5672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
 
 volumes:
   pgdata:
