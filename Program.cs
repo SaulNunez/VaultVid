@@ -30,6 +30,11 @@ builder.Services.AddMinio(configureClient => configureClient
             .WithCredentials(accessKey, secretKey)
             .Build());
 
+builder.Services.AddStackExchangeRedisCache(options =>
+{
+    options.Configuration = builder.Configuration.GetConnectionString("ReddisCacheConnection");
+});
+
 builder.Services.AddDefaultIdentity<IdentityUser>(options => options.SignIn.RequireConfirmedAccount = true).AddEntityFrameworkStores<ApplicationDbContext>();
 
 builder.Services.AddSingleton<IVideoService, VideoService>();
