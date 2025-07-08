@@ -14,11 +14,8 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
-builder.Services.AddDbContext<VideoServiceContext>(
-    c => c.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
-
 builder.Services.AddDbContext<ApplicationDbContext>(
-    c => c.UseNpgsql(builder.Configuration.GetConnectionString("IdentityDbContextConnection"))
+    c => c.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"))
 );
 
 var endpoint = builder.Configuration.GetSection("ObjectStorage")["Endpoint"];
@@ -32,7 +29,7 @@ builder.Services.AddMinio(configureClient => configureClient
 
 builder.Services.AddStackExchangeRedisCache(options =>
 {
-    options.Configuration = builder.Configuration.GetConnectionString("ReddisCacheConnection");
+    options.Configuration = builder.Configuration.GetConnectionString("RedisCacheConnection");
 });
 
 builder.Services.AddDefaultIdentity<IdentityUser>(options => options.SignIn.RequireConfirmedAccount = true).AddEntityFrameworkStores<ApplicationDbContext>();
