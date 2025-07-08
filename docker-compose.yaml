@@ -5,9 +5,11 @@ services:
       dockerfile: Dockerfile
     environment:
       ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__ReddisCacheConnection: redis
     depends_on:
       - postgres
       - minio
+      - redis
     networks:
       - backend
 
@@ -51,10 +53,15 @@ services:
       - "5672:5672"
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
+  redis:
+    image: "redis:alpine"
+    volumes:
+      - redis-data:/data
 
 volumes:
   pgdata:
   miniodata:
+  redis-data:
 
 networks:
   backend:
