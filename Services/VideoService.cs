@@ -47,7 +47,6 @@ public class VideoService(ApplicationDbContext context) : IVideoService
         var existingVideo = context.Videos.Find(id) ?? throw new KeyNotFoundException("Video with ID {id} not found.");
         existingVideo.Title = video.Title;
         existingVideo.Description = video.Description;
-        existingVideo.Tags = video.Tags;
 
         await context.SaveChangesAsync();
 

@@ -7,7 +7,6 @@ public class Video
     public string Title { get; set; }
     public string Description { get; set; }
     public string ObjectName { get; set; }
-    public string Tags { get; set; }
     public string ThumbnailLocation { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset EditedAt { get; set; }
