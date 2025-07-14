@@ -1,4 +1,4 @@
-@page "/video/{Id:string}"
+@page "/video/{Id:Guid}"
 @attribute [StreamRendering]
 @inject VideoHostingService.Services.IVideoService VideoService
 
@@ -20,7 +20,7 @@ else
 
 @code {
     [Parameter]
-    public string Id { get; set; } = "";
+    public Guid Id { get; set; }
 
     private Models.Video? video;
 
@@ -28,8 +28,7 @@ else
     {
         try
         {
-            var videoId = Guid.Parse(Id);
-            video = VideoService.GetVideoById(videoId);
+            video = VideoService.GetVideoById(Id);
         }
         catch(Exception e)
         {
