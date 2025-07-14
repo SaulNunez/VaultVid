@@ -1,3 +1,5 @@
+using System.Text.Json;
+using Microsoft.Extensions.Caching.Distributed;
 using VideoHostingService.Models;
 using VideoHostingService.Models.Identity;
 
@@ -10,7 +12,7 @@ public interface ICommentLikeService
     Dictionary<VoteSense, int> GetVoteInformationOnComment(Guid commentId);
 }
 
-public class CommentLikeService(ApplicationDbContext context, RedisCacheService cacheService) : ICommentLikeService
+public class CommentLikeService(ApplicationDbContext context, IDistributedCache cache) : ICommentLikeService
 {
     public async Task AddOrUpdate(Guid commentId, Guid userId, CommentLike commentLike)
     {
@@ -43,8 +45,10 @@ public class CommentLikeService(ApplicationDbContext context, RedisCacheService 
         //While collisions between other object types in the cache with a GUID are pretty much impossible
         //Having a prefix allows quick debugging of the cache
         var idAsString = $"CommentLike_{commentId}";
-        var votingInformation = cacheService.GetCacheData<Dictionary<VoteSense, int>>(idAsString);
-        if (votingInformation == null)
+
+        var cacheInformation = cache.GetString(idAsString);
+
+        if (cacheInformation == null)
         {
             var comment = context.VideoComments.Find(commentId) ?? throw new KeyNotFoundException($"Comment with ID {commentId} not found");
 
@@ -52,15 +56,24 @@ public class CommentLikeService(ApplicationDbContext context, RedisCacheService 
                 .GroupBy(x => x.VoteSense)
                 .Select(group => new { voteSense = group.Key, count = group.Count() });
 
-            votingInformation = [];
+            Dictionary<VoteSense, int> votingInformation = [];
             foreach (var item in likeInformation)
             {
                 votingInformation.Add(item.voteSense, item.count);
             }
+            var options = new DistributedCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = new TimeSpan(0, 30, 0)
+            };
 
-            cacheService.SetCacheData(idAsString, votingInformation, new TimeSpan(0, 30, 0));
+            var jsonData = JsonSerializer.Serialize(votingInformation);
+            cache.SetString(idAsString, jsonData, options);
+            return votingInformation;
         }
-
-        return votingInformation;
+        else
+        {
+            var votingInformation = JsonSerializer.Deserialize<Dictionary<VoteSense, int>>(cacheInformation) ?? throw new InvalidDataException($"Cache entry for comment {commentId} had invalid information");
+            return votingInformation;
+        }
     }
 }
