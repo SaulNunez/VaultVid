@@ -2,6 +2,7 @@ using Minio;
 using Minio.DataModel.Args;
 using Minio.Exceptions;
 using VideoHostingService.Models;
+using VideoHostingService.Models.Identity;
 
 namespace VideoHostingService.VideoUploads;
 
@@ -12,7 +13,7 @@ public interface IVideoUploadService
 }
 
 public class VideoUploadService(IMinioClient minioClient,
-    VideoServiceContext videoServiceContext) : IVideoUploadService
+    ApplicationDbContext videoServiceContext) : IVideoUploadService
 {
     public static readonly string bucketName = "videos";
 
