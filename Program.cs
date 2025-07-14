@@ -34,10 +34,10 @@ builder.Services.AddStackExchangeRedisCache(options =>
 
 builder.Services.AddDefaultIdentity<IdentityUser>(options => options.SignIn.RequireConfirmedAccount = true).AddEntityFrameworkStores<ApplicationDbContext>();
 
-builder.Services.AddSingleton<IVideoService, VideoService>();
-builder.Services.AddSingleton<IVideoLikeService, VideoLikeService>();
-builder.Services.AddSingleton<IVideoCommentService, VideoCommentService>();
-builder.Services.AddSingleton<ICommentLikeService, CommentLikeService>();
+builder.Services.AddScoped<IVideoService, VideoService>();
+builder.Services.AddScoped<IVideoLikeService, VideoLikeService>();
+builder.Services.AddScoped<IVideoCommentService, VideoCommentService>();
+builder.Services.AddScoped<ICommentLikeService, CommentLikeService>();
 
 builder.Services.AddTransient<IHumanTimeService, HumanTimeService>();
 builder.Services.AddScoped<IVideoUploadService, VideoUploadService>();
