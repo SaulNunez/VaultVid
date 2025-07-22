@@ -18,14 +18,18 @@ builder.Services.AddDbContext<ApplicationDbContext>(
     c => c.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"))
 );
 
-var endpoint = builder.Configuration.GetSection("ObjectStorage")["Endpoint"];
-var accessKey = builder.Configuration.GetSection("ObjectStorage")["AccessKey"];
-var secretKey = builder.Configuration.GetSection("ObjectStorage")["SecretKey"];
-
-builder.Services.AddMinio(configureClient => configureClient
-            .WithEndpoint(endpoint)
-            .WithCredentials(accessKey, secretKey)
+var minioConfig = builder.Configuration.GetSection("ObjectStorage").Get<ObjectStorageConfiguration>();
+if (minioConfig != null)
+{
+    builder.Services.AddMinio(configureClient => configureClient
+            .WithEndpoint(minioConfig.Endpoint)
+            .WithCredentials(minioConfig.AccessKey, minioConfig.SecretKey)
             .Build());
+}
+else
+{
+    Console.Error.WriteLine("Object storage could not be setup. Check section ObjectStorage in Configuration, either environment variables, or appsettings.json");
+}
 
 builder.Services.AddStackExchangeRedisCache(options =>
 {
