@@ -6,7 +6,6 @@ using Microsoft.AspNetCore.Identity;
 using VideoHostingService.Models.Identity;
 using Minio;
 using VideoHostingService.Utilities;
-using VideoHostingService.VideoUploads;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -44,7 +43,6 @@ builder.Services.AddScoped<IVideoCommentService, VideoCommentService>();
 builder.Services.AddScoped<ICommentLikeService, CommentLikeService>();
 
 builder.Services.AddTransient<IHumanTimeService, HumanTimeService>();
-builder.Services.AddScoped<IVideoUploadService, VideoUploadService>();
 
 var app = builder.Build();
 
