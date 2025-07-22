@@ -1,0 +1,125 @@
+@page "/upload"
+@using VideoHostingService.Models
+@inject IConfiguration Configuration
+@inject VideoHostingService.Services.IVideoService VideoService;
+
+<PageTitle>Upload</PageTitle>
+
+<h1>Upload</h1>
+
+<EditForm Model="@formModel" OnValidSubmit="HandleValidSubmit">
+    <DataAnnotationsValidator />
+    <ValidationSummary />
+
+    <div>
+        <label>Title:</label>
+        <InputText @bind-Value="formModel.Title" class="form-control" />
+    </div>
+
+    <div>
+        <label>Description:</label>
+        <InputText type="textarea" @bind-Value="formModel.Description" class="form-control" />
+    </div>
+
+    <div>
+        <label>Thumbnail:</label>
+        <InputFile OnChange="e => OnFileSelected(e, 1)" />
+    </div>
+
+    <div>
+        <label>Video:</label>
+        <InputFile OnChange="e => OnFileSelected(e, 2)" />
+    </div>
+
+    <button type="submit" class="btn btn-primary">Submit</button>
+</EditForm>
+
+@code {
+    private VideoUpload formModel = new();
+    private string[] permittedVideoExtensions = { ".mp4", ".mkv", ".avi", ".mov", ".webm",  ".mpeg", ".mpg", ".m4v", ".ogv", ".xvid"};
+    private string[] permittedImageExtensions = { ".webp", ".jpeg", ".jpg", ".png", ".gif", ".bmp" };
+
+    private void OnFileSelected(InputFileChangeEventArgs e, int fileNumber){
+        var file = e.File;
+
+        if (file != null)
+        {
+            if (fileNumber == 1)
+                formModel.Thumbnail = file;
+            else if (fileNumber == 2)
+                formModel.VideoFile = file;
+        }
+    }
+
+    private bool CheckVideoFileIsValid(IBrowserFile videoFile){
+        if(videoFile == null)
+        {
+            return false;
+        }
+
+        var contentType = videoFile.ContentType;
+        var uploadedFileName = videoFile.Name;
+        var fileSize = videoFile.Size;
+
+        string ext = Path.GetExtension(uploadedFileName).ToLowerInvariant();
+
+        if (string.IsNullOrEmpty(ext) || !permittedVideoExtensions.Contains(ext))
+        {
+           return false;
+        }
+
+        //TODO: Do signature check to make sure extension in header matches
+        var sizes = Configuration.GetSection("MaxUploadSizes").Get<MaxUploadSizes>();
+
+        if(fileSize > sizes.MaxVideoSize)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool CheckImageFileIsValid(IBrowserFile imageFile){
+        if(imageFile == null)
+        {
+            return false;
+        }
+
+        var contentType = imageFile.ContentType;
+        var uploadedFileName = imageFile.Name;
+        var fileSize = imageFile.Size;
+
+        string ext = Path.GetExtension(uploadedFileName).ToLowerInvariant();
+
+        if (string.IsNullOrEmpty(ext) || !permittedImageExtensions.Contains(ext))
+        {
+           return false;
+        }
+
+        //TODO: Do signature check to make sure extension in header matches
+        var sizes = Configuration.GetSection("MaxUploadSizes").Get<MaxUploadSizes>();
+
+        if(fileSize > sizes.MaxThumbnailSize)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private async Task HandleValidSubmit(CancellationToken token)
+    {
+        if(!CheckVideoFileIsValid(formModel.VideoFile))
+        {
+            
+        }
+        if(!CheckImageFileIsValid(formModel.Thumbnail))
+        {
+
+        }
+
+        await VideoService.AddVideo(formModel,token);
+    }
+}
+#line default
+#line hidden
