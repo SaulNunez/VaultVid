@@ -1,0 +1,26 @@
+@using VideoHostingService.Models
+
+@inject VideoHostingService.Services.IVideoCommentService VideoCommentService
+
+<EditForm Model="@newComment" OnValidSubmit="HandleValidSubmit">
+    <DataAnnotationsValidator />
+    <ValidationSummary />
+
+    <div>
+        <InputText @bind-Value="newComment.Comment" class="form-control" />
+    </div>
+    <button type="submit" class="btn btn-primary">Submit</button>
+</EditForm>
+
+@code
+{
+    [Parameter]
+    public Guid VideoId { get; set; }
+
+    public CreateComment newComment = new();
+
+    private async Task HandleValidSubmit()
+    {
+        await VideoCommentService.AddComment(VideoId, newComment);
+    }
+}

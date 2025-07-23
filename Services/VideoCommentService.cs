@@ -6,7 +6,7 @@ namespace VideoHostingService.Services;
 
 public interface IVideoCommentService
 {
-    Task AddComment(Guid videoId, VideoComment comment);
+    Task AddComment(Guid videoId, CreateComment comment);
     Task Delete(Guid videoCommentId);
     IEnumerable<VideoComment> GetComments(Guid videoId, int size, int offset);
 }
@@ -20,11 +20,17 @@ public class VideoCommentService(ApplicationDbContext context) : IVideoCommentSe
         return existingVideo.Comments.Skip(offset).Take(size).ToList();
     }
 
-    public async Task AddComment(Guid videoId, VideoComment comment)
+    public async Task AddComment(Guid videoId, CreateComment comment)
     {
         var existingVideo = context.Videos.Find(videoId) ?? throw new KeyNotFoundException($"Video with ID {videoId} not found");
 
-        existingVideo.Comments.Add(comment);
+        var dbComment = new VideoComment
+        {
+            Text = comment.Comment,
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+
+        existingVideo.Comments.Add(dbComment);
 
         await context.SaveChangesAsync();
     }

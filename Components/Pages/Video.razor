@@ -1,4 +1,8 @@
 @page "/video/{Id:Guid}"
+
+@using VideoHostingService.Components;
+@using VideoHostingService.Models
+
 @attribute [StreamRendering]
 @inject VideoHostingService.Services.IVideoService VideoService
 
@@ -13,8 +17,9 @@ else
     <div>
         <p>@video.Description</p>
     </div>
+    <CommentCreation VideoId=Id />
     @foreach(var comment in video.Comments){
-        <Comment VideoComment="comment" />
+        <Comment VideoComment=comment />
     }
 }
 
