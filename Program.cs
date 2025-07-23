@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Identity;
 using VideoHostingService.Models.Identity;
 using Minio;
 using VideoHostingService.Utilities;
+using Microsoft.AspNetCore.DataProtection;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -43,6 +44,12 @@ builder.Services.AddScoped<IVideoCommentService, VideoCommentService>();
 builder.Services.AddScoped<ICommentLikeService, CommentLikeService>();
 
 builder.Services.AddTransient<IHumanTimeService, HumanTimeService>();
+
+// Prevent exception due to asp net not finding our antiforgery token
+// Solution can be found here: https://stackoverflow.com/a/47143941/14228475
+builder.Services.AddDataProtection()
+    .SetApplicationName("vaultvid")
+    .PersistKeysToFileSystem(new DirectoryInfo(@"/vaultvid/keys"));
 
 var app = builder.Build();
 
