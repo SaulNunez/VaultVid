@@ -6,11 +6,14 @@ using VideoHostingService.Components.Pages;
 using VideoHostingService.Models;
 using VideoHostingService.Models.Identity;
 using Video = VideoHostingService.Models.Video;
+using VideoHostingService.Utilities;
 
 namespace VideoHostingService.Services;
 
 public interface IVideoService
 {
+    Task<string> UploadThumbnail(Stream thumbnailFileStream, long thumbnailSize, string contentType, CancellationToken token);
+    Task<string> UploadVideo(Stream videoFileStream, CancellationToken token, IProgress<ProgressReport> progress = null);
     Task AddVideo(VideoUpload video, CancellationToken token);
     Video GetVideoById(Guid id);
     Task DeleteVideo(Guid id);
@@ -23,14 +26,110 @@ public class VideoService(ApplicationDbContext context, IMinioClient minioClient
     public static readonly string videoBucketName = "videos";
     public static readonly string thumbnailBucketName = "thumbnails";
 
+    public async Task<string> UploadThumbnail(Stream thumbnailFileStream,
+    long thumbnailSize, string extensionFromSource, string contentType,
+    CancellationToken token = null)
+    {
+        if(!ImageExtensions.IsValidImageHeader(thumbnailFileStream, extensionFromSource))
+        {
+            throw new InvalidFileException();
+        }
+
+        var sizes = configuration.GetSection("MaxUploadSizes").Get<MaxUploadSizes>();
+
+        try
+        {
+            var beArgs = new BucketExistsArgs()
+                .WithBucket("vaultvid");
+            bool found = await minioClient.BucketExistsAsync(beArgs, token).ConfigureAwait(false);
+            if (!found)
+            {
+                var mbArgs = new MakeBucketArgs()
+                    .WithBucket("vaultvid");
+                await minioClient.MakeBucketAsync(mbArgs, token).ConfigureAwait(false);
+            }
+
+            var trustedFileName = Path.GetRandomFileName();
+            var guid = Guid.NewGuid();
+            var filename = Path.Join("thumbnails", guid);
+
+            var args = new PutObjectArgs()
+                .WithBucket("vaultvid")
+                .WtihObject(filename)
+                .WithStreamData(thumbnailFileStream)
+                .WithObjectSize(thumbnailSize)
+                .WithContentType(contentType);
+            await minioClient.PutObjectAsync(args, token);
+
+            var statObjectArgs = new StatObjectArgs()
+                .WithBucket("vaultvid")
+                .WithObject(filename);
+            var objectStat = await minioClient.StatObjectAsync(statObjectArgs, token);
+
+            return objectStat.ObjectName;
+        }
+        catch (MinioException e)
+        {
+            Console.WriteLine("File Upload Error: {0}", e.Message);
+            throw;
+        }
+    }
+
+    public async Task<string> UploadVideo(Stream videoFileStream, string extensionFromSource, string contentType,
+    IProgress<ProgressReport> progress = null, CancellationToken token = null)
+    {
+        if (!VideoValidator.IsValidVideoHeader(thumbnailFileStream, extensionFromSource))
+        {
+            throw new InvalidFileException();
+        }
+        
+        var sizes = configuration.GetSection("MaxUploadSizes").Get<MaxUploadSizes>();
+
+        try
+        {
+            var beArgs = new BucketExistsArgs()
+           .WithBucket("vaultvid");
+            bool found = await minioClient.BucketExistsAsync(beArgs, token).ConfigureAwait(false);
+            if (!found)
+            {
+                var mbArgs = new MakeBucketArgs()
+                    .WithBucket("vaultvid");
+                await minioClient.MakeBucketAsync(mbArgs, token).ConfigureAwait(false);
+            }
+
+            var trustedFileName = Path.GetRandomFileName();
+            var guid = Guid.NewGuid();
+            var filename = Path.Join("videos", guid);
+
+            var args = new PutObjectArgs()
+                .WithBucket("vaultvid")
+                .WtihObject(filename)
+                .WithStreamData(thumbnailFileStream)
+                .WithProgress(progress)
+                .WithObjectSize(thumbnailSize)
+                .WithContentType(contentType);
+            await minioClient.PutObjectAsync(args, token);
+
+            var statObjectArgs = new StatObjectArgs()
+                .WithBucket("vaultvid")
+                .WithObject(filename);
+            var objectStat = await minioClient.StatObjectAsync(statObjectArgs, token);
+
+            return objectStat.ObjectName;
+        }
+        catch (MinioException e)
+        {
+            Console.Error.WriteLine("File Upload Error: {0}", e.Message);
+            throw;
+        }
+    }
+
     public async Task AddVideo(VideoUpload video, CancellationToken token)
     {
         if (video == null)
         {
             throw new ArgumentNullException(nameof(video), "Video information can't be null");
         }
-
-        await using var transaction = await context.Database.BeginTransactionAsync(token);
 
         var videoDb = new Video
         {
@@ -40,85 +139,6 @@ public class VideoService(ApplicationDbContext context, IMinioClient minioClient
         };
         context.Videos.Add(videoDb);
         await context.SaveChangesAsync(token);
-
-        var sizes = configuration.GetSection("MaxUploadSizes").Get<MaxUploadSizes>();
-
-        try
-        {
-            var videoExtension = Path.GetExtension(video.VideoFile.Name);
-            var videoObjectName = $"{videoDb.Id}/original.{videoExtension}";
-
-            // Make a bucket on the server, if not already present.
-            var beArgs = new BucketExistsArgs()
-                .WithBucket(videoBucketName);
-            bool found = await minioClient.BucketExistsAsync(beArgs, token).ConfigureAwait(false);
-            if (!found)
-            {
-                var mbArgs = new MakeBucketArgs()
-                    .WithBucket(videoBucketName);
-                await minioClient.MakeBucketAsync(mbArgs, token).ConfigureAwait(false);
-            }
-            var videoStream = video.VideoFile.OpenReadStream(sizes.MaxVideoSize, cancellationToken: token);
-            // Upload a file to bucket.
-            var putObjectArgs = new PutObjectArgs()
-                .WithBucket(videoBucketName)
-                .WithObject(videoObjectName)
-                .WithStreamData(videoStream)
-                .WithContentType(video.VideoFile.ContentType);
-            var objectResponse = await minioClient.PutObjectAsync(putObjectArgs, token).ConfigureAwait(false);
-
-            var statObjectArgs = new StatObjectArgs()
-                .WithBucket(videoBucketName)
-                .WithObject(videoObjectName);
-            var objectStat = await minioClient.StatObjectAsync(statObjectArgs, token);
-
-            videoDb.ObjectName = objectStat.ObjectName;
-        }
-        catch (MinioException e)
-        {
-            Console.WriteLine("File Upload Error: {0}", e.Message);
-            throw;
-        }
-
-        try
-        {
-            var thumbnailExtension = Path.GetExtension(video.Thumbnail.Name);
-            var thumbnailObjectName = $"{videoDb.Id}/original.{thumbnailExtension}";
-
-            // Make a bucket on the server, if not already present.
-            var beArgs = new BucketExistsArgs()
-                .WithBucket(thumbnailBucketName);
-            bool found = await minioClient.BucketExistsAsync(beArgs, token).ConfigureAwait(false);
-            if (!found)
-            {
-                var mbArgs = new MakeBucketArgs()
-                    .WithBucket(thumbnailBucketName);
-                await minioClient.MakeBucketAsync(mbArgs, token).ConfigureAwait(false);
-            }
-            
-            var thumbnailStream = video.Thumbnail.OpenReadStream(sizes.MaxThumbnailSize, cancellationToken: token);
-            // Upload a file to bucket.
-            var putObjectArgs = new PutObjectArgs()
-                .WithBucket(thumbnailBucketName)
-                .WithObject(thumbnailObjectName)
-                .WithStreamData(thumbnailStream)
-                .WithContentType(video.Thumbnail.ContentType);
-            var objectResponse = await minioClient.PutObjectAsync(putObjectArgs, token).ConfigureAwait(false);
-
-            var statObjectArgs = new StatObjectArgs()
-                .WithBucket(thumbnailBucketName)
-                .WithObject(thumbnailObjectName);
-            var objectStat = await minioClient.StatObjectAsync(statObjectArgs, token);
-
-            videoDb.ObjectName = objectStat.ObjectName;
-        }
-        catch (MinioException e)
-        {
-            Console.WriteLine("File Upload Error: {0}", e.Message);
-            throw;
-        }
-
-        await transaction.CommitAsync(token);
     }
 
     public Video GetVideoById(Guid id)
