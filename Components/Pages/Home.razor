@@ -34,6 +34,10 @@ else
                     <img class="video_big_card_thumbnail" src="@card.ThumbnailUrl" alt="" loading="lazy" />
                 }
                 <p class="video_big_card_title">@card.Title</p>
+                @if (!card.IsReady)
+                {
+                    <p class="video_big_card_badge">Processing</p>
+                }
             </a>
         }
     </div>
@@ -56,7 +60,11 @@ else
             {
                 // Presigning is a local signature computation, not a call to the storage server.
                 var thumbnailUrl = await MediaUrls.GetUrlAsync(video.ThumbnailLocation);
-                cards.Add(new VideoCard(video.PublicId, video.Title, thumbnailUrl));
+                cards.Add(new VideoCard(
+                    video.PublicId,
+                    video.Title,
+                    thumbnailUrl,
+                    video.Status == VideoStatus.Ready));
             }
         }
         catch (Exception e)
@@ -66,5 +74,5 @@ else
         }
     }
 
-    private sealed record VideoCard(Guid PublicId, string Title, string? ThumbnailUrl);
+    private sealed record VideoCard(Guid PublicId, string Title, string? ThumbnailUrl, bool IsReady);
 }

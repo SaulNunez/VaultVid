@@ -33,11 +33,9 @@ public class VideoService(
     IMinioClient minioClient,
     IOptions<MaxUploadSizes> uploadSizes,
     IOptions<ObjectStorageConfiguration> storageOptions,
+    ITranscodeQueue transcodeQueue,
     ILogger<VideoService> logger) : IVideoService
 {
-    private const string VideoPrefix = "videos";
-    private const string ThumbnailPrefix = "thumbnails";
-
     private static readonly FileExtensionContentTypeProvider ContentTypes = new();
 
     private readonly MaxUploadSizes sizes = uploadSizes.Value;
@@ -57,7 +55,7 @@ public class VideoService(
         // object with no row, and the objects are rolled back below if the save fails.
         var videoObject = await UploadAsync(
             upload.VideoFile,
-            VideoPrefix,
+            MediaKeys.VideoPrefix,
             sizes.MaxVideoSize,
             AcceptedExtensions.PermittedVideoExtensions,
             VideoValidator.HeaderSize,
@@ -66,13 +64,14 @@ public class VideoService(
             cancellationToken);
 
         string? thumbnailObject = null;
+        Video video;
         try
         {
             if (upload.Thumbnail is not null)
             {
                 thumbnailObject = await UploadAsync(
                     upload.Thumbnail,
-                    ThumbnailPrefix,
+                    MediaKeys.ThumbnailPrefix,
                     sizes.MaxThumbnailSize,
                     AcceptedExtensions.PermittedImageExtensions,
                     ImageValidator.HeaderSize,
@@ -82,7 +81,7 @@ public class VideoService(
             }
 
             var now = DateTimeOffset.UtcNow;
-            var video = new Video
+            video = new Video
             {
                 Title = upload.Title,
                 Description = upload.Description,
@@ -95,8 +94,6 @@ public class VideoService(
 
             context.Videos.Add(video);
             await context.SaveChangesAsync(cancellationToken);
-
-            return video.PublicId;
         }
         catch
         {
@@ -105,11 +102,28 @@ public class VideoService(
             await TryRemoveObjectAsync(thumbnailObject);
             throw;
         }
+
+        // Deliberately outside the rollback above: the source object and the row are both valid,
+        // so a broker outage must not throw the upload away. The video simply stays Pending and
+        // TranscodeSweeper re-publishes the job once the broker is back.
+        try
+        {
+            await transcodeQueue.PublishAsync(
+                new TranscodeRequest(video.Id, video.PublicId, videoObject),
+                cancellationToken);
+        }
+        catch (Exception e)
+        {
+            logger.LogError(e, "Could not enqueue transcoding for video {VideoId}; it will be re-queued by the sweeper", video.Id);
+        }
+
+        return video.PublicId;
     }
 
     public Task<Video?> GetByPublicIdAsync(Guid publicId, CancellationToken cancellationToken)
         => context.Videos
             .AsNoTracking()
+            .Include(v => v.Renditions.OrderBy(r => r.Height))
             .FirstOrDefaultAsync(v => v.PublicId == publicId, cancellationToken);
 
     public async Task<IReadOnlyList<Video>> GetRecentAsync(int size, CancellationToken cancellationToken)
@@ -132,6 +146,7 @@ public class VideoService(
 
         await TryRemoveObjectAsync(video.ObjectName);
         await TryRemoveObjectAsync(video.ThumbnailLocation);
+        await TryRemovePrefixAsync(MediaKeys.HlsDirectory(video.Id));
 
         return true;
     }
@@ -233,6 +248,40 @@ public class VideoService(
             await minioClient
                 .MakeBucketAsync(new MakeBucketArgs().WithBucket(bucket), cancellationToken)
                 .ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Removes every object under a prefix. Used for a video's HLS tree, which is many objects
+    /// (one playlist plus a segment per six seconds) whose names only the listing knows.
+    /// </summary>
+    private async Task TryRemovePrefixAsync(string prefix)
+    {
+        try
+        {
+            var listArgs = new ListObjectsArgs()
+                .WithBucket(bucket)
+                .WithPrefix(prefix)
+                .WithRecursive(true);
+
+            var keys = new List<string>();
+            await foreach (var item in minioClient.ListObjectsEnumAsync(listArgs, CancellationToken.None))
+            {
+                keys.Add(item.Key);
+            }
+
+            if (keys.Count == 0)
+            {
+                return;
+            }
+
+            await minioClient.RemoveObjectsAsync(
+                new RemoveObjectsArgs().WithBucket(bucket).WithObjects(keys),
+                CancellationToken.None);
+        }
+        catch (Exception e)
+        {
+            logger.LogWarning(e, "Could not remove objects under prefix {Prefix}", prefix);
         }
     }
 

@@ -11,6 +11,7 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
     public DbSet<VideoLike> VideoLikes { get; set; }
     public DbSet<CommentLike> CommentLikes { get; set; }
     public DbSet <Playlist> Playlists { get; set; }
+    public DbSet<VideoRendition> VideoRenditions { get; set; }
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -32,7 +33,20 @@ public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options
                 .WithOne(l => l.Video!)
                 .HasForeignKey(l => l.VideoId)
                 .OnDelete(DeleteBehavior.Cascade);
+
+            // The transcode sweeper scans for videos stuck in Pending/Processing.
+            video.HasIndex(v => v.Status);
+
+            video.HasMany(v => v.Renditions)
+                .WithOne(r => r.Video!)
+                .HasForeignKey(r => r.VideoId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
+
+        // A rung is produced at most once per video, so a retried job cannot double-insert.
+        builder.Entity<VideoRendition>()
+            .HasIndex(r => new { r.VideoId, r.Height })
+            .IsUnique();
 
         builder.Entity<VideoComment>(comment =>
         {

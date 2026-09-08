@@ -1,7 +1,9 @@
 using Microsoft.EntityFrameworkCore;
 using VideoHostingService.Components;
+using VideoHostingService.Endpoints;
 using VideoHostingService.Models;
 using VideoHostingService.Services;
+using VideoHostingService.Utilities;
 using Microsoft.AspNetCore.Identity;
 using VideoHostingService.Models.Identity;
 using Minio;
@@ -22,7 +24,11 @@ builder.Services.AddRazorComponents()
 builder.Services.AddRazorPages();
 
 builder.Services.AddDbContext<ApplicationDbContext>(
-    c => c.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"))
+    // ApplicationDbContext lives in VideoHostingService.Core so the transcoding worker can share
+    // it, but the migrations stay here, next to the startup project that applies them.
+    c => c.UseNpgsql(
+        builder.Configuration.GetConnectionString("DefaultConnection"),
+        npgsql => npgsql.MigrationsAssembly("VideoHostingService"))
 );
 
 builder.Services.Configure<MaxUploadSizes>(builder.Configuration.GetSection(MaxUploadSizes.SectionName));
@@ -31,7 +37,12 @@ var objectStorageSection = builder.Configuration.GetSection(ObjectStorageConfigu
 builder.Services.Configure<ObjectStorageConfiguration>(objectStorageSection);
 
 var minioConfig = objectStorageSection.Get<ObjectStorageConfiguration>();
-if (minioConfig != null)
+
+// Checked on the endpoint, not just on the section: appsettings.json always defines an
+// ObjectStorage section (bucket name, SSL), so Get<>() returns a non-null object with a blank
+// endpoint whenever the real credentials are absent - and AddMinio throws on a blank endpoint,
+// which would take `dotnet ef` down with it.
+if (!string.IsNullOrWhiteSpace(minioConfig?.Endpoint))
 {
     builder.Services.AddMinio(configureClient => configureClient
             .WithEndpoint(minioConfig.Endpoint)
@@ -42,6 +53,24 @@ if (minioConfig != null)
 else
 {
     Console.Error.WriteLine("Object storage could not be setup. Check section ObjectStorage in Configuration, either environment variables, or appsettings.json");
+}
+
+var rabbitSection = builder.Configuration.GetSection(RabbitMqConfiguration.SectionName);
+builder.Services.Configure<RabbitMqConfiguration>(rabbitSection);
+builder.Services.Configure<TranscodeSweeperOptions>(
+    builder.Configuration.GetSection(TranscodeSweeperOptions.SectionName));
+
+// Guarded like MinIO above: without a broker the app still starts (and `dotnet ef` still works),
+// uploads just stay in the Pending state instead of being transcoded.
+if (!string.IsNullOrWhiteSpace(rabbitSection[nameof(RabbitMqConfiguration.Host)]))
+{
+    builder.Services.AddSingleton<ITranscodeQueue, RabbitMqTranscodeQueue>();
+    builder.Services.AddHostedService<TranscodeSweeper>();
+}
+else
+{
+    Console.Error.WriteLine("Message broker could not be setup. Check section RabbitMq in Configuration, either environment variables, or appsettings.json. Uploaded videos will not be transcoded.");
+    builder.Services.AddSingleton<ITranscodeQueue, NullTranscodeQueue>();
 }
 
 builder.Services.AddStackExchangeRedisCache(options =>
@@ -64,6 +93,7 @@ builder.Services.AddScoped<IVideoLikeService, VideoLikeService>();
 builder.Services.AddScoped<IVideoCommentService, VideoCommentService>();
 builder.Services.AddScoped<ICommentLikeService, CommentLikeService>();
 builder.Services.AddScoped<IMediaUrlService, MediaUrlService>();
+builder.Services.AddScoped<RedisCacheService>();
 
 builder.Services.AddTransient<IHumanTimeService, HumanTimeService>();
 
@@ -96,6 +126,9 @@ app.MapStaticAssets();
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 app.MapRazorPages();
+
+// HLS playlists and segments are proxied rather than presigned; see MediaEndpoints.
+app.MapMediaEndpoints();
 
 // If the user updates their deployment, migrations will automatically update the DB
 using (var scope = app.Services.CreateScope())

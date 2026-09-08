@@ -15,12 +15,47 @@ services:
       ObjectStorage__PublicEndpoint: "${OBJECT_STORAGE_PUBLIC_ENDPOINT:-localhost:9000}"
       ObjectStorage__AccessKey: ${OBJECT_STORAGE_ACCESS_KEY}
       ObjectStorage__SecretKey: ${OBJECT_STORAGE_SECRET_KEY}
+      RabbitMq__Host: rabbitmq
+      RabbitMq__User: ${RABBITMQ_USER}
+      RabbitMq__Password: ${RABBITMQ_PASSWORD}
     volumes:
       - vaultvids:/vaultvid
     depends_on:
-      - postgres
-      - minio
-      - redis
+      postgres:
+        # Program.cs applies migrations on boot, so a merely-started Postgres is not enough.
+        condition: service_healthy
+      minio:
+        condition: service_started
+      redis:
+        condition: service_started
+      rabbitmq:
+        condition: service_started
+    networks:
+      - backend
+
+  # Consumes transcode jobs and produces the HLS ladder. Stateless, so it scales out:
+  #   docker compose up --scale transcoder=4
+  transcoder:
+    build:
+      context: .
+      dockerfile: Worker/Dockerfile
+    environment:
+      DOTNET_ENVIRONMENT: Development
+      ConnectionStrings__DefaultConnection: "Host=postgres;Database=${DATABASE_NAME};Username=postgres;Password=${DATABASE_PASSWORD}"
+      # No PublicEndpoint: the worker reads and writes objects directly and never presigns URLs.
+      ObjectStorage__Endpoint: "minio:9000"
+      ObjectStorage__AccessKey: ${OBJECT_STORAGE_ACCESS_KEY}
+      ObjectStorage__SecretKey: ${OBJECT_STORAGE_SECRET_KEY}
+      RabbitMq__Host: rabbitmq
+      RabbitMq__User: ${RABBITMQ_USER}
+      RabbitMq__Password: ${RABBITMQ_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      rabbitmq:
+        condition: service_started
     networks:
       - backend
 
@@ -31,6 +66,11 @@ services:
       POSTGRES_DB: ${DATABASE_NAME}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ${DATABASE_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     networks:
       - backend
 
@@ -50,16 +90,26 @@ services:
       - backend
 
   rabbitmq:
-    image: rabbitmq:latest
+    image: rabbitmq:4-management
     hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
     ports:
+      # 5672 is AMQP; 15672 is the management UI.
       - "5672:5672"
+      - "15672:15672"
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - backend
+
   redis:
     image: "redis:alpine"
     volumes:
       - redis-data:/data
+    networks:
+      - backend
 
 volumes:
   pgdata:
