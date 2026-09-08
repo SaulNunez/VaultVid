@@ -1,4 +1,4 @@
-using VideoHostingService.Components;
+using Microsoft.EntityFrameworkCore;
 using VideoHostingService.Models;
 using VideoHostingService.Models.Identity;
 
@@ -6,41 +6,67 @@ namespace VideoHostingService.Services;
 
 public interface IVideoCommentService
 {
-    Task AddComment(Guid videoId, CreateComment comment);
-    Task Delete(Guid videoCommentId);
-    IEnumerable<VideoComment> GetComments(Guid videoId, int size, int offset);
+    Task<IReadOnlyList<VideoComment>> GetCommentsAsync(Guid videoPublicId, int size, int offset, CancellationToken cancellationToken);
+
+    Task<VideoComment> AddCommentAsync(Guid videoPublicId, CreateComment comment, string userId, string userName, CancellationToken cancellationToken);
+
+    /// <summary>Returns false when the comment does not exist or is not owned by <paramref name="userId"/>.</summary>
+    Task<bool> DeleteAsync(int commentId, string userId, CancellationToken cancellationToken);
 }
 
 public class VideoCommentService(ApplicationDbContext context) : IVideoCommentService
 {
-    public IEnumerable<VideoComment> GetComments(Guid videoId, int size, int offset)
-    {
-        var existingVideo = context.Videos.Find(videoId) ?? throw new KeyNotFoundException($"Video with ID {videoId} not found");
+    public async Task<IReadOnlyList<VideoComment>> GetCommentsAsync(Guid videoPublicId, int size, int offset, CancellationToken cancellationToken)
+        => await context.VideoComments
+            .AsNoTracking()
+            .Where(c => c.Video!.PublicId == videoPublicId)
+            .OrderByDescending(c => c.CreatedAt)
+            .Skip(offset)
+            .Take(size)
+            .ToListAsync(cancellationToken);
 
-        return existingVideo.Comments.Skip(offset).Take(size).ToList();
-    }
-
-    public async Task AddComment(Guid videoId, CreateComment comment)
+    public async Task<VideoComment> AddCommentAsync(Guid videoPublicId, CreateComment comment, string userId, string userName, CancellationToken cancellationToken)
     {
-        var existingVideo = context.Videos.Find(videoId) ?? throw new KeyNotFoundException($"Video with ID {videoId} not found");
+        ArgumentNullException.ThrowIfNull(comment);
+        ArgumentException.ThrowIfNullOrWhiteSpace(userId);
+
+        // Only the key is needed, so this avoids loading the whole video and its collections.
+        var videoId = await context.Videos
+            .Where(v => v.PublicId == videoPublicId)
+            .Select(v => v.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (videoId == Guid.Empty)
+        {
+            throw new KeyNotFoundException($"Video with ID {videoPublicId} not found");
+        }
 
         var dbComment = new VideoComment
         {
+            VideoId = videoId,
             Text = comment.Comment,
-            CreatedAt = DateTimeOffset.UtcNow
+            UserId = userId,
+            UserName = userName,
+            CreatedAt = DateTimeOffset.UtcNow,
         };
 
-        existingVideo.Comments.Add(dbComment);
+        context.VideoComments.Add(dbComment);
+        await context.SaveChangesAsync(cancellationToken);
 
-        await context.SaveChangesAsync();
+        return dbComment;
     }
 
-    public async Task Delete(Guid videoCommentId)
+    public async Task<bool> DeleteAsync(int commentId, string userId, CancellationToken cancellationToken)
     {
-        var existingComment = context.VideoComments.Find(videoCommentId) ?? throw new KeyNotFoundException($"Comment with ID {videoCommentId} not found");
+        var existingComment = await context.VideoComments.FindAsync([commentId], cancellationToken);
+        if (existingComment is null || !string.Equals(existingComment.UserId, userId, StringComparison.Ordinal))
+        {
+            return false;
+        }
 
         context.VideoComments.Remove(existingComment);
+        await context.SaveChangesAsync(cancellationToken);
 
-        await context.SaveChangesAsync();
+        return true;
     }
 }

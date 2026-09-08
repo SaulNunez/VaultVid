@@ -1,33 +1,70 @@
-﻿@page "/"
-@inject VideoHostingService.Services.IVideoService VideoService
+@page "/"
+@inject IVideoService VideoService
+@inject IMediaUrlService MediaUrls
+@inject ILogger<Home> Logger
 
-@if(videos == null)
+<PageTitle>VaultVid</PageTitle>
+
+<h1>Latest videos</h1>
+
+@if (loadFailed)
 {
-    <p>Something went wrong</p>
+    <p role="alert">Something went wrong loading videos. Try again in a moment.</p>
 }
-else 
+else if (cards is null)
 {
-    <PageTitle>Home</PageTitle>
-
+    <p aria-live="polite">Loading videos&hellip;</p>
+}
+else if (cards.Count == 0)
+{
+    <p>No videos have been uploaded yet.</p>
+}
+else
+{
     <div class="video_grid">
-        @foreach(var video in videos){
-        <div class="video_big_card">
-            <img class="video_big_card_thumbnail" src="{@video.ThumbnailLocation}" />
-            <p class="video_big_card_title">{@video.Title}</p>
-        </div>
+        @foreach (var card in cards)
+        {
+            <a class="video_big_card" href="video/@card.PublicId" @key="card.PublicId">
+                @if (card.ThumbnailUrl is null)
+                {
+                    <div class="video_big_card_thumbnail video_big_card_thumbnail--empty" aria-hidden="true"></div>
+                }
+                else
+                {
+                    <img class="video_big_card_thumbnail" src="@card.ThumbnailUrl" alt="" loading="lazy" />
+                }
+                <p class="video_big_card_title">@card.Title</p>
+            </a>
         }
     </div>
 }
 
 @code {
-    private List<Models.Video>? videos;
-    
+    private const int PageSize = 50;
+
+    private List<VideoCard>? cards;
+    private bool loadFailed;
+
     protected override async Task OnInitializedAsync()
     {
-        videos = await VideoService.GetVideos(50);
+        try
+        {
+            var videos = await VideoService.GetRecentAsync(PageSize, CancellationToken.None);
+
+            cards = [];
+            foreach (var video in videos)
+            {
+                // Presigning is a local signature computation, not a call to the storage server.
+                var thumbnailUrl = await MediaUrls.GetUrlAsync(video.ThumbnailLocation);
+                cards.Add(new VideoCard(video.PublicId, video.Title, thumbnailUrl));
+            }
+        }
+        catch (Exception e)
+        {
+            Logger.LogError(e, "Could not load the video list");
+            loadFailed = true;
+        }
     }
 
-    void OpenVideo(){
-
-    }
+    private sealed record VideoCard(Guid PublicId, string Title, string? ThumbnailUrl);
 }

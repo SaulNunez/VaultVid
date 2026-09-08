@@ -1,13 +1,18 @@
-@using VideoHostingService.Models
-
-@inject VideoHostingService.Utilities.IHumanTimeService HumanTimeService
+@inject IHumanTimeService HumanTimeService
 
 <div class="video_comment">
-    <p class="video_comment_title">Joe Doe <span>-</span> @HumanTimeService.PrettyTimeDifference(VideoComment.CreatedAt.LocalDateTime, DateTime.Now) </p>
+    <p class="video_comment_title">
+        @VideoComment.UserName
+        <span aria-hidden="true">-</span>
+        <time datetime="@VideoComment.CreatedAt.ToString("o")">
+            @HumanTimeService.PrettyTimeDifference(VideoComment.CreatedAt, DateTimeOffset.UtcNow)
+        </time>
+    </p>
     <p class="video_comment_comment">@VideoComment.Text</p>
 </div>
 
-@code{
+@code {
     [Parameter]
-    public VideoComment VideoComment { get; set; }
+    [EditorRequired]
+    public VideoComment VideoComment { get; set; } = default!;
 }

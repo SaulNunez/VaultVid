@@ -9,7 +9,10 @@ services:
       ASPNETCORE_ENVIRONMENT: Development
       ConnectionStrings__DefaultConnection: "Host=postgres;Database=${DATABASE_NAME};Username=postgres;Password=${DATABASE_PASSWORD}"
       ConnectionStrings__RedisCacheConnection: redis
-      ObjectStorage__Endpoint: minio
+      ObjectStorage__Endpoint: "minio:9000"
+      # Presigned media URLs are handed to the browser, so they have to be signed against an
+      # address the browser can reach - not the compose-internal service name.
+      ObjectStorage__PublicEndpoint: "${OBJECT_STORAGE_PUBLIC_ENDPOINT:-localhost:9000}"
       ObjectStorage__AccessKey: ${OBJECT_STORAGE_ACCESS_KEY}
       ObjectStorage__SecretKey: ${OBJECT_STORAGE_SECRET_KEY}
     volumes:
@@ -34,6 +37,10 @@ services:
   minio:
     image: quay.io/minio/minio
     command: server /data --console-address ":9001"
+    ports:
+      # 9000 is the S3 API the presigned URLs point at; 9001 is the admin console.
+      - "9000:9000"
+      - "9001:9001"
     environment:
       MINIO_ROOT_USER: ${OBJECT_STORAGE_ACCESS_KEY}
       MINIO_ROOT_PASSWORD: ${OBJECT_STORAGE_SECRET_KEY}

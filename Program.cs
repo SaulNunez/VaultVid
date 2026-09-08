@@ -5,25 +5,38 @@ using VideoHostingService.Services;
 using Microsoft.AspNetCore.Identity;
 using VideoHostingService.Models.Identity;
 using Minio;
-using VideoHostingService.Utilities;
 using Microsoft.AspNetCore.DataProtection;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddRazorComponents()
-    .AddInteractiveServerComponents();
+    .AddInteractiveServerComponents()
+    // InputFile streams uploads over the circuit in chunks; the 32 KB default
+    // receive limit is too small for them. This is not the max upload size:
+    // that is enforced by MaxUploadSizes below.
+    .AddHubOptions(options => options.MaximumReceiveMessageSize = 1024 * 1024);
+
+// The scaffolded ASP.NET Core Identity UI under Areas/Identity is Razor Pages,
+// not Blazor, so it needs the Razor Pages services and endpoints registered too.
+builder.Services.AddRazorPages();
 
 builder.Services.AddDbContext<ApplicationDbContext>(
     c => c.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"))
 );
 
-var minioConfig = builder.Configuration.GetSection("ObjectStorage").Get<ObjectStorageConfiguration>();
+builder.Services.Configure<MaxUploadSizes>(builder.Configuration.GetSection(MaxUploadSizes.SectionName));
+
+var objectStorageSection = builder.Configuration.GetSection(ObjectStorageConfiguration.SectionName);
+builder.Services.Configure<ObjectStorageConfiguration>(objectStorageSection);
+
+var minioConfig = objectStorageSection.Get<ObjectStorageConfiguration>();
 if (minioConfig != null)
 {
     builder.Services.AddMinio(configureClient => configureClient
             .WithEndpoint(minioConfig.Endpoint)
             .WithCredentials(minioConfig.AccessKey, minioConfig.SecretKey)
+            .WithSSL(minioConfig.UseSsl)
             .Build());
 }
 else
@@ -36,12 +49,21 @@ builder.Services.AddStackExchangeRedisCache(options =>
     options.Configuration = builder.Configuration.GetConnectionString("RedisCacheConnection");
 });
 
-builder.Services.AddDefaultIdentity<IdentityUser>(options => options.SignIn.RequireConfirmedAccount = true).AddEntityFrameworkStores<ApplicationDbContext>();
+builder.Services.AddDefaultIdentity<IdentityUser>(options =>
+        options.SignIn.RequireConfirmedAccount =
+            builder.Configuration.GetValue("Identity:RequireConfirmedAccount", true))
+    .AddEntityFrameworkStores<ApplicationDbContext>();
+
+// Makes the authentication state available to components as a cascading value,
+// which is what <AuthorizeRouteView> and <AuthorizeView> read.
+builder.Services.AddCascadingAuthenticationState();
+builder.Services.AddAuthorization();
 
 builder.Services.AddScoped<IVideoService, VideoService>();
 builder.Services.AddScoped<IVideoLikeService, VideoLikeService>();
 builder.Services.AddScoped<IVideoCommentService, VideoCommentService>();
 builder.Services.AddScoped<ICommentLikeService, CommentLikeService>();
+builder.Services.AddScoped<IMediaUrlService, MediaUrlService>();
 
 builder.Services.AddTransient<IHumanTimeService, HumanTimeService>();
 
@@ -63,12 +85,17 @@ if (!app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
+// Authentication has to run before antiforgery and before the endpoints so that
+// [Authorize] and AuthenticationStateProvider see a populated ClaimsPrincipal.
+app.UseAuthentication();
+app.UseAuthorization();
 
 app.UseAntiforgery();
 
 app.MapStaticAssets();
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
+app.MapRazorPages();
 
 // If the user updates their deployment, migrations will automatically update the DB
 using (var scope = app.Services.CreateScope())
