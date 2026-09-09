@@ -1,0 +1,291 @@
+@page "/video/{PublicId:guid}"
+@implements IAsyncDisposable
+
+@using System.Security.Claims
+
+@inject IVideoService VideoService
+@inject IMediaUrlService MediaUrls
+@inject IJSRuntime JS
+@inject ILogger<Watch> Logger
+
+<PageTitle>@(video?.Title ?? "Video")</PageTitle>
+
+@if (loadFailed)
+{
+    <p role="alert">Something went wrong loading this video.</p>
+}
+else if (!loaded)
+{
+    <p aria-live="polite">Loading&hellip;</p>
+}
+else if (video is null)
+{
+    <h1>Video not found</h1>
+    <p>This video doesn't exist, or it was removed.</p>
+}
+else
+{
+    <h1 class="video_item_title">@video.Title</h1>
+
+    @if (video.Status == VideoStatus.Ready)
+    {
+        <div @ref="playerContainer"></div>
+    }
+    else if (video.Status == VideoStatus.Failed)
+    {
+        <div class="video_notice video_notice--error" role="alert">
+            <p>This video could not be processed.</p>
+            @if (isOwner && !string.IsNullOrWhiteSpace(video.ProcessingError))
+            {
+                <p class="video_notice_detail">@video.ProcessingError</p>
+            }
+        </div>
+    }
+    else
+    {
+        <div class="video_notice" aria-live="polite">
+            @if (posterUrl is not null)
+            {
+                <img class="video_notice_poster" src="@posterUrl" alt="" />
+            }
+            <p>This video is still processing. It will start playing here on its own.</p>
+            @if (video.Renditions.Count > 0)
+            {
+                <p class="video_notice_detail">
+                    Ready so far: @string.Join(", ", video.Renditions.Select(r => $"{r.Height}p"))
+                </p>
+            }
+        </div>
+    }
+
+    <div>
+        <p>@video.Description</p>
+    </div>
+
+    <h2>Comments</h2>
+
+    <AuthorizeView>
+        <Authorized>
+            <CommentCreation VideoPublicId="PublicId" OnCommentAdded="OnCommentAdded" />
+        </Authorized>
+        <NotAuthorized>
+            <p><a href="Identity/Account/Login">Log in</a> to leave a comment.</p>
+        </NotAuthorized>
+    </AuthorizeView>
+
+    @if (comments.Count == 0)
+    {
+        <p>No comments yet.</p>
+    }
+    else
+    {
+        @foreach (var comment in comments)
+        {
+            <Comment VideoComment="comment" @key="comment.Id" />
+        }
+    }
+}
+
+@code {
+    private const int CommentPageSize = 50;
+
+    [Parameter]
+    public Guid PublicId { get; set; }
+
+    [Inject]
+    private IVideoCommentService CommentService { get; set; } = default!;
+
+    /// <summary>How often the page re-checks a video that is still being transcoded.</summary>
+    private static readonly TimeSpan ProcessingPollInterval = TimeSpan.FromSeconds(5);
+
+    [CascadingParameter]
+    private Task<AuthenticationState>? AuthenticationState { get; set; }
+
+    private VideoHostingService.Models.Video? video;
+    private List<VideoComment> comments = [];
+    private bool loaded;
+    private bool loadFailed;
+    private bool isOwner;
+    private Task? pollTask;
+
+    private ElementReference playerContainer;
+    private IJSObjectReference? playerModule;
+    private IJSObjectReference? player;
+    private string? videoUrl;
+    private string? posterUrl;
+    private readonly CancellationTokenSource pageCts = new();
+
+    // The route parameter can change without the component being recreated, so load in
+    // OnParametersSetAsync rather than OnInitializedAsync.
+    protected override async Task OnParametersSetAsync()
+    {
+        loaded = false;
+        loadFailed = false;
+
+        try
+        {
+            video = await VideoService.GetByPublicIdAsync(PublicId, pageCts.Token);
+
+            if (video is not null)
+            {
+                await ApplyVideoAsync();
+                comments = [.. await CommentService.GetCommentsAsync(PublicId, CommentPageSize, 0, pageCts.Token)];
+
+                // A video that is still transcoding becomes playable without any action from the
+                // viewer, so poll until it does rather than making them reload.
+                if (IsProcessing(video) && pollTask is null)
+                {
+                    pollTask = PollUntilReadyAsync();
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Navigated away mid-load; nothing to show.
+        }
+        catch (Exception e)
+        {
+            Logger.LogError(e, "Could not load video {PublicId}", PublicId);
+            loadFailed = true;
+        }
+        finally
+        {
+            loaded = true;
+        }
+    }
+
+    /// <summary>
+    /// Reads the player URL and ownership off the loaded video. The playable URL is the HLS master
+    /// playlist behind the media proxy, not a presigned URL for the raw upload: an HLS player
+    /// fetches child playlists and segments by relative URI, which cannot carry a signature.
+    /// </summary>
+    private async Task ApplyVideoAsync()
+    {
+        if (video is null)
+        {
+            return;
+        }
+
+        videoUrl = video.Status == VideoStatus.Ready ? $"/media/{PublicId}/master.m3u8" : null;
+        posterUrl = await MediaUrls.GetUrlAsync(video.ThumbnailLocation, pageCts.Token);
+
+        if (AuthenticationState is not null)
+        {
+            var state = await AuthenticationState;
+            var userId = state.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            isOwner = userId is not null && string.Equals(userId, video.UserId, StringComparison.Ordinal);
+        }
+    }
+
+    private static bool IsProcessing(VideoHostingService.Models.Video candidate)
+        => candidate.Status is VideoStatus.Pending or VideoStatus.Processing;
+
+    private async Task PollUntilReadyAsync()
+    {
+        using var timer = new PeriodicTimer(ProcessingPollInterval);
+
+        try
+        {
+            while (await timer.WaitForNextTickAsync(pageCts.Token))
+            {
+                var latest = await VideoService.GetByPublicIdAsync(PublicId, pageCts.Token);
+                if (latest is null)
+                {
+                    return;
+                }
+
+                // Applied on the renderer's context: this loop runs on a timer thread, and
+                // `video` is read by the render tree.
+                await InvokeAsync(async () =>
+                {
+                    video = latest;
+                    await ApplyVideoAsync();
+                    StateHasChanged();
+                });
+
+                // Higher rungs keep landing after this point, but they only widen the quality
+                // menu inside the master playlist - the page has nothing left to swap out.
+                if (!IsProcessing(latest))
+                {
+                    return;
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Navigated away.
+        }
+        catch (Exception e)
+        {
+            Logger.LogError(e, "Could not refresh the status of video {PublicId}", PublicId);
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (player is not null || videoUrl is null || !loaded)
+        {
+            return;
+        }
+
+        try
+        {
+            playerModule ??= await JS.InvokeAsync<IJSObjectReference>(
+                "import", "./Components/Pages/Watch.razor.js");
+
+            player = await playerModule.InvokeAsync<IJSObjectReference>(
+                "createPlayer", playerContainer, videoUrl, posterUrl, video?.Title);
+        }
+        catch (JSDisconnectedException)
+        {
+            // The circuit is gone; nothing to clean up.
+        }
+        catch (Exception e)
+        {
+            Logger.LogError(e, "Could not initialise the video player");
+        }
+    }
+
+    private void OnCommentAdded(VideoComment comment)
+    {
+        comments.Insert(0, comment);
+        StateHasChanged();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await pageCts.CancelAsync();
+
+        // Let the poll loop unwind before the token source goes away underneath it.
+        if (pollTask is not null)
+        {
+            try
+            {
+                await pollTask;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
+        pageCts.Dispose();
+
+        try
+        {
+            if (player is not null)
+            {
+                await player.InvokeVoidAsync("destroy");
+                await player.DisposeAsync();
+            }
+
+            if (playerModule is not null)
+            {
+                await playerModule.DisposeAsync();
+            }
+        }
+        catch (JSDisconnectedException)
+        {
+            // Circuit already torn down.
+        }
+    }
+}

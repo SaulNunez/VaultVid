@@ -1,26 +1,86 @@
-@using VideoHostingService.Models
+@inject IVideoCommentService VideoCommentService
+@inject ILogger<CommentCreation> Logger
 
-@inject VideoHostingService.Services.IVideoCommentService VideoCommentService
-
-<EditForm Model="@newComment" OnValidSubmit="HandleValidSubmit">
+<EditForm Model="newComment" OnValidSubmit="HandleValidSubmit">
     <DataAnnotationsValidator />
     <ValidationSummary />
 
     <div>
-        <InputText @bind-Value="newComment.Comment" class="form-control" />
+        <label for="comment-text" class="form-label">Add a comment</label>
+        <InputText id="comment-text" @bind-Value="newComment.Comment" class="form-control" disabled="@isSubmitting" />
     </div>
-    <button type="submit" class="btn btn-primary">Submit</button>
+
+    @if (errorMessage is not null)
+    {
+        <p class="validation-message" role="alert">@errorMessage</p>
+    }
+
+    <button type="submit" class="btn btn-primary" disabled="@isSubmitting">
+        @(isSubmitting ? "Posting…" : "Submit")
+    </button>
 </EditForm>
 
-@code
-{
+@code {
     [Parameter]
-    public Guid VideoId { get; set; }
+    [EditorRequired]
+    public Guid VideoPublicId { get; set; }
 
-    public CreateComment newComment = new();
+    /// <summary>Raised with the saved comment so the parent can show it without a reload.</summary>
+    [Parameter]
+    public EventCallback<VideoComment> OnCommentAdded { get; set; }
+
+    [CascadingParameter]
+    private Task<AuthenticationState>? AuthenticationState { get; set; }
+
+    private CreateComment newComment = new();
+    private bool isSubmitting;
+    private string? errorMessage;
 
     private async Task HandleValidSubmit()
     {
-        await VideoCommentService.AddComment(VideoId, newComment);
+        if (isSubmitting || AuthenticationState is null)
+        {
+            return;
+        }
+
+        var user = (await AuthenticationState).User;
+        var userId = user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+
+        if (string.IsNullOrEmpty(userId))
+        {
+            errorMessage = "You need to be logged in to comment.";
+            return;
+        }
+
+        isSubmitting = true;
+        errorMessage = null;
+
+        try
+        {
+            var saved = await VideoCommentService.AddCommentAsync(
+                VideoPublicId,
+                newComment,
+                userId,
+                user.Identity?.Name ?? "Unknown",
+                CancellationToken.None);
+
+            // Reset the form so the box is empty for the next comment.
+            newComment = new CreateComment();
+
+            await OnCommentAdded.InvokeAsync(saved);
+        }
+        catch (KeyNotFoundException)
+        {
+            errorMessage = "This video no longer exists.";
+        }
+        catch (Exception e)
+        {
+            Logger.LogError(e, "Could not save a comment on {VideoPublicId}", VideoPublicId);
+            errorMessage = "Your comment couldn't be saved. Try again.";
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
     }
 }

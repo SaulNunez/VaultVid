@@ -9,15 +9,83 @@ services:
       ASPNETCORE_ENVIRONMENT: Development
       ConnectionStrings__DefaultConnection: "Host=postgres;Database=${DATABASE_NAME};Username=postgres;Password=${DATABASE_PASSWORD}"
       ConnectionStrings__RedisCacheConnection: redis
-      ObjectStorage__Endpoint: minio
+      ObjectStorage__Endpoint: "minio:9000"
+      # Presigned media URLs are handed to the browser, so they have to be signed against an
+      # address the browser can reach - not the compose-internal service name.
+      ObjectStorage__PublicEndpoint: "${OBJECT_STORAGE_PUBLIC_ENDPOINT:-localhost:9000}"
       ObjectStorage__AccessKey: ${OBJECT_STORAGE_ACCESS_KEY}
       ObjectStorage__SecretKey: ${OBJECT_STORAGE_SECRET_KEY}
+      RabbitMq__Host: rabbitmq
+      RabbitMq__User: ${RABBITMQ_USER}
+      RabbitMq__Password: ${RABBITMQ_PASSWORD}
     volumes:
       - vaultvids:/vaultvid
     depends_on:
-      - postgres
-      - minio
-      - redis
+      postgres:
+        # Program.cs applies migrations on boot, so a merely-started Postgres is not enough.
+        condition: service_healthy
+      minio:
+        condition: service_started
+      redis:
+        condition: service_started
+      rabbitmq:
+        condition: service_started
+    networks:
+      - backend
+
+  # Consumes the *required* rungs - the short jobs that make a video playable. Kept as its own
+  # deployment so a new upload always finds a free worker instead of waiting behind somebody
+  # else's 4K encode. Stateless, so it scales out:
+  #   docker compose up --scale transcoder=4
+  transcoder:
+    build:
+      context: .
+      dockerfile: Worker/Dockerfile
+    environment:
+      DOTNET_ENVIRONMENT: Development
+      ConnectionStrings__DefaultConnection: "Host=postgres;Database=${DATABASE_NAME};Username=postgres;Password=${DATABASE_PASSWORD}"
+      # No PublicEndpoint: the worker reads and writes objects directly and never presigns URLs.
+      ObjectStorage__Endpoint: "minio:9000"
+      ObjectStorage__AccessKey: ${OBJECT_STORAGE_ACCESS_KEY}
+      ObjectStorage__SecretKey: ${OBJECT_STORAGE_SECRET_KEY}
+      RabbitMq__Host: rabbitmq
+      RabbitMq__User: ${RABBITMQ_USER}
+      RabbitMq__Password: ${RABBITMQ_PASSWORD}
+      TranscodeWorker__Lanes: Required
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      rabbitmq:
+        condition: service_started
+    networks:
+      - backend
+
+  # Consumes the *optional* rungs: 720p and above. These are long jobs that only widen the quality
+  # menu of a video that already plays, so they get their own capacity and can be scaled - or
+  # stopped entirely - without affecting how fast uploads become watchable.
+  transcoder-optional:
+    build:
+      context: .
+      dockerfile: Worker/Dockerfile
+    environment:
+      DOTNET_ENVIRONMENT: Development
+      ConnectionStrings__DefaultConnection: "Host=postgres;Database=${DATABASE_NAME};Username=postgres;Password=${DATABASE_PASSWORD}"
+      ObjectStorage__Endpoint: "minio:9000"
+      ObjectStorage__AccessKey: ${OBJECT_STORAGE_ACCESS_KEY}
+      ObjectStorage__SecretKey: ${OBJECT_STORAGE_SECRET_KEY}
+      RabbitMq__Host: rabbitmq
+      RabbitMq__User: ${RABBITMQ_USER}
+      RabbitMq__Password: ${RABBITMQ_PASSWORD}
+      TranscodeWorker__Lanes: Optional
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      rabbitmq:
+        condition: service_started
     networks:
       - backend
 
@@ -28,12 +96,21 @@ services:
       POSTGRES_DB: ${DATABASE_NAME}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ${DATABASE_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     networks:
       - backend
 
   minio:
     image: quay.io/minio/minio
     command: server /data --console-address ":9001"
+    ports:
+      # 9000 is the S3 API the presigned URLs point at; 9001 is the admin console.
+      - "9000:9000"
+      - "9001:9001"
     environment:
       MINIO_ROOT_USER: ${OBJECT_STORAGE_ACCESS_KEY}
       MINIO_ROOT_PASSWORD: ${OBJECT_STORAGE_SECRET_KEY}
@@ -43,16 +120,26 @@ services:
       - backend
 
   rabbitmq:
-    image: rabbitmq:latest
+    image: rabbitmq:4-management
     hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
     ports:
+      # 5672 is AMQP; 15672 is the management UI.
       - "5672:5672"
+      - "15672:15672"
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - backend
+
   redis:
     image: "redis:alpine"
     volumes:
       - redis-data:/data
+    networks:
+      - backend
 
 volumes:
   pgdata:

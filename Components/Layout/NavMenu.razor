@@ -1,12 +1,18 @@
-﻿<div class="top-row ps-3 navbar navbar-dark">
+<div class="top-row ps-3 navbar navbar-dark">
     <div class="container-fluid">
-        <a class="navbar-brand" href="">Streaming</a>
+        <a class="navbar-brand" href="">VaultVid</a>
+        <button type="button"
+                class="navbar-toggler"
+                aria-expanded="@isNavOpen"
+                aria-controls="nav-menu"
+                aria-label="Toggle navigation menu"
+                @onclick="ToggleNav">
+            <span class="navbar-toggler-icon"></span>
+        </button>
     </div>
 </div>
 
-<input type="checkbox" title="Navigation menu" class="navbar-toggler" />
-
-<div class="nav-scrollable" onclick="document.querySelector('.navbar-toggler').click()">
+<div id="nav-menu" class="nav-scrollable @(isNavOpen ? "show" : null)" @onclick="CloseNav">
     <nav class="nav flex-column">
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
@@ -14,11 +20,22 @@
             </NavLink>
         </div>
 
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="upload">
-                <span class="bi bi-plus-square-fill-nav-menu" aria-hidden="true"></span> Upload
-            </NavLink>
-        </div>
+        <AuthorizeView>
+            <Authorized>
+                <div class="nav-item px-3">
+                    <NavLink class="nav-link" href="upload">
+                        <span class="bi bi-plus-square-fill-nav-menu" aria-hidden="true"></span> Upload
+                    </NavLink>
+                </div>
+            </Authorized>
+        </AuthorizeView>
     </nav>
 </div>
 
+@code {
+    private bool isNavOpen;
+
+    private void ToggleNav() => isNavOpen = !isNavOpen;
+
+    private void CloseNav() => isNavOpen = false;
+}

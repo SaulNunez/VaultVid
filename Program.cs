@@ -1,29 +1,53 @@
 using Microsoft.EntityFrameworkCore;
 using VideoHostingService.Components;
+using VideoHostingService.Endpoints;
 using VideoHostingService.Models;
 using VideoHostingService.Services;
+using VideoHostingService.Utilities;
 using Microsoft.AspNetCore.Identity;
 using VideoHostingService.Models.Identity;
 using Minio;
-using VideoHostingService.Utilities;
 using Microsoft.AspNetCore.DataProtection;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddRazorComponents()
-    .AddInteractiveServerComponents();
+    .AddInteractiveServerComponents()
+    // InputFile streams uploads over the circuit in chunks; the 32 KB default
+    // receive limit is too small for them. This is not the max upload size:
+    // that is enforced by MaxUploadSizes below.
+    .AddHubOptions(options => options.MaximumReceiveMessageSize = 1024 * 1024);
+
+// The scaffolded ASP.NET Core Identity UI under Areas/Identity is Razor Pages,
+// not Blazor, so it needs the Razor Pages services and endpoints registered too.
+builder.Services.AddRazorPages();
 
 builder.Services.AddDbContext<ApplicationDbContext>(
-    c => c.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"))
+    // ApplicationDbContext lives in VideoHostingService.Core so the transcoding worker can share
+    // it, but the migrations stay here, next to the startup project that applies them.
+    c => c.UseNpgsql(
+        builder.Configuration.GetConnectionString("DefaultConnection"),
+        npgsql => npgsql.MigrationsAssembly("VideoHostingService"))
 );
 
-var minioConfig = builder.Configuration.GetSection("ObjectStorage").Get<ObjectStorageConfiguration>();
-if (minioConfig != null)
+builder.Services.Configure<MaxUploadSizes>(builder.Configuration.GetSection(MaxUploadSizes.SectionName));
+
+var objectStorageSection = builder.Configuration.GetSection(ObjectStorageConfiguration.SectionName);
+builder.Services.Configure<ObjectStorageConfiguration>(objectStorageSection);
+
+var minioConfig = objectStorageSection.Get<ObjectStorageConfiguration>();
+
+// Checked on the endpoint, not just on the section: appsettings.json always defines an
+// ObjectStorage section (bucket name, SSL), so Get<>() returns a non-null object with a blank
+// endpoint whenever the real credentials are absent - and AddMinio throws on a blank endpoint,
+// which would take `dotnet ef` down with it.
+if (!string.IsNullOrWhiteSpace(minioConfig?.Endpoint))
 {
     builder.Services.AddMinio(configureClient => configureClient
             .WithEndpoint(minioConfig.Endpoint)
             .WithCredentials(minioConfig.AccessKey, minioConfig.SecretKey)
+            .WithSSL(minioConfig.UseSsl)
             .Build());
 }
 else
@@ -31,17 +55,45 @@ else
     Console.Error.WriteLine("Object storage could not be setup. Check section ObjectStorage in Configuration, either environment variables, or appsettings.json");
 }
 
+var rabbitSection = builder.Configuration.GetSection(RabbitMqConfiguration.SectionName);
+builder.Services.Configure<RabbitMqConfiguration>(rabbitSection);
+builder.Services.Configure<TranscodeSweeperOptions>(
+    builder.Configuration.GetSection(TranscodeSweeperOptions.SectionName));
+
+// Guarded like MinIO above: without a broker the app still starts (and `dotnet ef` still works),
+// uploads just stay in the Pending state instead of being transcoded.
+if (!string.IsNullOrWhiteSpace(rabbitSection[nameof(RabbitMqConfiguration.Host)]))
+{
+    builder.Services.AddSingleton<ITranscodeQueue, RabbitMqTranscodeQueue>();
+    builder.Services.AddHostedService<TranscodeSweeper>();
+}
+else
+{
+    Console.Error.WriteLine("Message broker could not be setup. Check section RabbitMq in Configuration, either environment variables, or appsettings.json. Uploaded videos will not be transcoded.");
+    builder.Services.AddSingleton<ITranscodeQueue, NullTranscodeQueue>();
+}
+
 builder.Services.AddStackExchangeRedisCache(options =>
 {
     options.Configuration = builder.Configuration.GetConnectionString("RedisCacheConnection");
 });
 
-builder.Services.AddDefaultIdentity<IdentityUser>(options => options.SignIn.RequireConfirmedAccount = true).AddEntityFrameworkStores<ApplicationDbContext>();
+builder.Services.AddDefaultIdentity<IdentityUser>(options =>
+        options.SignIn.RequireConfirmedAccount =
+            builder.Configuration.GetValue("Identity:RequireConfirmedAccount", true))
+    .AddEntityFrameworkStores<ApplicationDbContext>();
+
+// Makes the authentication state available to components as a cascading value,
+// which is what <AuthorizeRouteView> and <AuthorizeView> read.
+builder.Services.AddCascadingAuthenticationState();
+builder.Services.AddAuthorization();
 
 builder.Services.AddScoped<IVideoService, VideoService>();
 builder.Services.AddScoped<IVideoLikeService, VideoLikeService>();
 builder.Services.AddScoped<IVideoCommentService, VideoCommentService>();
 builder.Services.AddScoped<ICommentLikeService, CommentLikeService>();
+builder.Services.AddScoped<IMediaUrlService, MediaUrlService>();
+builder.Services.AddScoped<RedisCacheService>();
 
 builder.Services.AddTransient<IHumanTimeService, HumanTimeService>();
 
@@ -63,12 +115,20 @@ if (!app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
+// Authentication has to run before antiforgery and before the endpoints so that
+// [Authorize] and AuthenticationStateProvider see a populated ClaimsPrincipal.
+app.UseAuthentication();
+app.UseAuthorization();
 
 app.UseAntiforgery();
 
 app.MapStaticAssets();
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
+app.MapRazorPages();
+
+// HLS playlists and segments are proxied rather than presigned; see MediaEndpoints.
+app.MapMediaEndpoints();
 
 // If the user updates their deployment, migrations will automatically update the DB
 using (var scope = app.Services.CreateScope())

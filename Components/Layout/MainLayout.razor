@@ -1,4 +1,4 @@
-﻿@inherits LayoutComponentBase
+@inherits LayoutComponentBase
 
 <div class="page">
     <div class="sidebar">
@@ -7,11 +7,21 @@
 
     <main>
         <div class="top-row px-4">
-            <a href="https://learn.microsoft.com/aspnet/core/" target="_blank">About</a>
+            <LoginDisplay />
         </div>
 
         <article class="content px-4">
-            @Body
+            @* Keeps a failure in one page from tearing down the whole circuit. *@
+            <ErrorBoundary @ref="errorBoundary">
+                <ChildContent>
+                    @Body
+                </ChildContent>
+                <ErrorContent>
+                    <h1>Something went wrong</h1>
+                    <p>This page couldn't be shown. The error has been logged.</p>
+                    <button class="btn btn-primary" @onclick="Recover">Try again</button>
+                </ErrorContent>
+            </ErrorBoundary>
         </article>
     </main>
 </div>
@@ -21,3 +31,12 @@
     <a href="." class="reload">Reload</a>
     <span class="dismiss">🗙</span>
 </div>
+
+@code {
+    private ErrorBoundary? errorBoundary;
+
+    // A boundary latches after it catches; navigating to a new page should clear it.
+    protected override void OnParametersSet() => errorBoundary?.Recover();
+
+    private void Recover() => errorBoundary?.Recover();
+}
