@@ -1,19 +1,24 @@
 using Microsoft.EntityFrameworkCore;
 using VideoHostingService.Models;
 using VideoHostingService.Models.Identity;
+using VideoHostingService.Services;
 
 namespace VideoHostingService.Worker;
 
 /// <summary>
-/// Runs one transcode job end to end: probe the source, then walk the ladder producing renditions.
-/// The required rungs come first so the video flips to Ready as early as possible; the higher
-/// rungs continue afterwards and appear in the master playlist as they land.
+/// Runs one transcode job: probe the source, then produce the rungs belonging to the job's stage.
 /// </summary>
+/// <remarks>
+/// A Required job produces just enough to make the video playable, flips it to Ready, and then
+/// enqueues an Optional job for the rest. Because those travel on separate queues, the long
+/// high-resolution encodes can never delay the next upload becoming watchable.
+/// </remarks>
 public class TranscodeProcessor(
     ApplicationDbContext context,
     MediaStorage storage,
     VideoProbe probe,
     FfmpegTranscoder transcoder,
+    ITranscodeQueue queue,
     ILogger<TranscodeProcessor> logger)
 {
     public async Task ProcessAsync(TranscodeRequest request, CancellationToken cancellationToken)
@@ -65,15 +70,20 @@ public class TranscodeProcessor(
 
             await EnsureThumbnailAsync(video, sourcePath, workingDirectory, probed, cancellationToken);
 
-            var plan = TranscodeLadder.Plan(probed.Height);
             var requiredHeights = TranscodeLadder.Required(probed.Height).Select(r => r.Height).ToHashSet();
 
+            // Each stage encodes only its own half of the ladder.
+            var plan = request.Stage == TranscodeStage.Required
+                ? TranscodeLadder.Required(probed.Height)
+                : TranscodeLadder.Optional(probed.Height);
+
             logger.LogInformation(
-                "Ladder for video {VideoId}: {Rungs}",
-                video.Id, string.Join(", ", plan.Select(r => r.Name)));
+                "{Stage} ladder for video {VideoId}: {Rungs}",
+                request.Stage, video.Id,
+                plan.Count == 0 ? "(nothing to do)" : string.Join(", ", plan.Select(r => r.Name)));
 
             // A re-delivered job may already satisfy the required rungs, in which case the video is
-            // playable right now and should not wait behind the remaining optional encodes.
+            // playable right now and should not wait behind the remaining encodes.
             await PromoteIfPlayableAsync(video, requiredHeights, cancellationToken);
 
             foreach (var rung in plan)
@@ -98,13 +108,50 @@ public class TranscodeProcessor(
 
             if (video.Status != VideoStatus.Ready)
             {
-                // Only reachable if the plan produced nothing usable at all.
+                // Only reachable if the required stage produced nothing usable at all.
                 throw new TranscodeException("No renditions could be produced from this file.");
+            }
+
+            if (request.Stage == TranscodeStage.Required)
+            {
+                await EnqueueOptionalStageAsync(video, probed.Height, request, cancellationToken);
             }
         }
         finally
         {
             TryDeleteDirectory(workingDirectory);
+        }
+    }
+
+    /// <summary>
+    /// Hands the remaining rungs to the optional queue, now that the video is playable. A failure
+    /// here is not fatal: the video already plays, and the sweeper re-queues an unfinished ladder.
+    /// </summary>
+    private async Task EnqueueOptionalStageAsync(
+        Video video,
+        int sourceHeight,
+        TranscodeRequest request,
+        CancellationToken cancellationToken)
+    {
+        var outstanding = TranscodeLadder.Optional(sourceHeight)
+            .Where(rung => video.Renditions.All(r => r.Height != rung.Height))
+            .ToList();
+
+        if (outstanding.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await queue.PublishAsync(
+                request with { Stage = TranscodeStage.Optional },
+                cancellationToken);
+        }
+        catch (Exception e)
+        {
+            logger.LogError(
+                e, "Could not enqueue the optional rungs of video {VideoId}; the sweeper will retry", video.Id);
         }
     }
 

@@ -1,7 +1,9 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Minio;
 using VideoHostingService.Models;
 using VideoHostingService.Models.Identity;
+using VideoHostingService.Services;
 using VideoHostingService.Worker;
 
 var builder = Host.CreateApplicationBuilder(args);
@@ -41,7 +43,29 @@ builder.Services.AddSingleton<FfmpegTranscoder>();
 builder.Services.AddScoped<MediaStorage>();
 builder.Services.AddScoped<TranscodeProcessor>();
 
-builder.Services.AddHostedService<TranscodeConsumer>();
+// Publishing the follow-up optional job needs the same client the web app uses.
+builder.Services.AddSingleton<ITranscodeQueue, RabbitMqTranscodeQueue>();
+
+// One consumer per lane this worker serves.
+var lanes = builder.Configuration
+    .GetSection(TranscodeWorkerOptions.SectionName)
+    .Get<TranscodeWorkerOptions>()?.ParsedLanes ?? [TranscodeStage.Required, TranscodeStage.Optional];
+
+if (lanes.Count == 0)
+{
+    Console.Error.WriteLine("TranscodeWorker:Lanes names no valid lane; expected Required, Optional, or both.");
+    return 1;
+}
+
+foreach (var lane in lanes)
+{
+    builder.Services.AddSingleton<IHostedService>(sp => new TranscodeConsumer(
+        lane,
+        sp.GetRequiredService<IServiceScopeFactory>(),
+        sp.GetRequiredService<IOptions<RabbitMqConfiguration>>(),
+        sp.GetRequiredService<IOptions<TranscodeWorkerOptions>>(),
+        sp.GetRequiredService<ILogger<TranscodeConsumer>>()));
+}
 
 var host = builder.Build();
 await host.RunAsync();

@@ -22,15 +22,23 @@ resolution - a 1920x1080 upload gets four renditions and is never upscaled to 14
 watchable; the higher rungs continue afterwards and are added to the HLS master playlist as they
 finish, so the quality menu fills in while the video is already playing.
 
+The two halves of the ladder travel on **separate queues**. The required rungs - the short jobs a
+viewer is actually waiting on - go to `vaultvid.transcode.required`; once they finish and the video
+is live, the worker enqueues the rest onto `vaultvid.transcode.optional`. Each queue has its own
+worker deployment, so a new upload can never wait behind somebody else's 4K encode.
+
 Failed jobs are retried with a backoff before the video is marked `Failed` with a reason. Jobs
 that never reached the broker, or whose worker died mid-encode, are re-queued by a sweeper in the
 web app.
 
-The worker is stateless, so an operator decides how much transcoding capacity to run:
+The workers are stateless, so an operator decides how much capacity each lane gets:
 
 ```bash
-docker compose up --scale transcoder=4
+docker compose up --scale transcoder=4 --scale transcoder-optional=2
 ```
+
+Starving the optional lane only delays the higher resolutions; uploads still become watchable at
+the usual speed.
 
 Playback goes through `/media/{publicId}/...` in the web app rather than presigned storage URLs:
 an HLS player follows relative URIs to child playlists and segments, which cannot carry a

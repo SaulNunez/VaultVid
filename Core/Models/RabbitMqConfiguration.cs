@@ -14,6 +14,16 @@ public class RabbitMqConfiguration
 
     public string VirtualHost { get; set; } = "/";
 
-    /// <summary>Durable queue transcode jobs are published to and consumed from.</summary>
-    public string QueueName { get; set; } = "vaultvid.transcode";
+    /// <summary>
+    /// Durable queue for the rungs that make a video playable. Kept separate from
+    /// <see cref="OptionalQueueName"/> so these short, viewer-facing jobs cannot queue behind a
+    /// long 4K encode.
+    /// </summary>
+    public string RequiredQueueName { get; set; } = "vaultvid.transcode.required";
+
+    /// <summary>Durable queue for the rungs above the required ones.</summary>
+    public string OptionalQueueName { get; set; } = "vaultvid.transcode.optional";
+
+    public string QueueFor(TranscodeStage stage)
+        => stage == TranscodeStage.Required ? RequiredQueueName : OptionalQueueName;
 }

@@ -9,11 +9,17 @@ using VideoHostingService.Models.Identity;
 namespace VideoHostingService.Worker;
 
 /// <summary>
-/// Consumes transcode jobs and hands each to a <see cref="TranscodeProcessor"/> in its own scope.
-/// Prefetch is one: transcoding saturates the CPU, so pulling a second job would only slow the
-/// first one down. Run more replicas to go wider.
+/// Consumes one stage's queue and hands each job to a <see cref="TranscodeProcessor"/> in its own
+/// scope. Prefetch is one: transcoding saturates the CPU, so pulling a second job would only slow
+/// the first one down. Run more replicas to go wider.
 /// </summary>
+/// <remarks>
+/// One instance is registered per lane this worker serves. Running the required and optional lanes
+/// as separate deployments is what guarantees a new upload always finds a free worker, rather than
+/// waiting behind somebody else's 4K encode.
+/// </remarks>
 public class TranscodeConsumer(
+    TranscodeStage stage,
     IServiceScopeFactory scopeFactory,
     IOptions<RabbitMqConfiguration> rabbitOptions,
     IOptions<TranscodeWorkerOptions> workerOptions,
@@ -21,6 +27,7 @@ public class TranscodeConsumer(
 {
     private readonly RabbitMqConfiguration rabbit = rabbitOptions.Value;
     private readonly TranscodeWorkerOptions settings = workerOptions.Value;
+    private string QueueName => rabbit.QueueFor(stage);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -60,7 +67,7 @@ public class TranscodeConsumer(
 
         // Declared by both ends so neither the app nor the worker has to start first.
         await channel.QueueDeclareAsync(
-            queue: rabbit.QueueName,
+            queue: QueueName,
             durable: true,
             exclusive: false,
             autoDelete: false,
@@ -73,12 +80,12 @@ public class TranscodeConsumer(
         consumer.ReceivedAsync += async (_, args) => await HandleDeliveryAsync(channel, args, stoppingToken);
 
         await channel.BasicConsumeAsync(
-            queue: rabbit.QueueName,
+            queue: QueueName,
             autoAck: false,
             consumer: consumer,
             cancellationToken: stoppingToken);
 
-        logger.LogInformation("Listening for transcode jobs on {Queue}", rabbit.QueueName);
+        logger.LogInformation("Listening for {Stage} transcode jobs on {Queue}", stage, QueueName);
 
         // Hold the connection open; deliveries arrive on the consumer above.
         await Task.Delay(Timeout.Infinite, stoppingToken);
@@ -188,6 +195,30 @@ public class TranscodeConsumer(
 public class TranscodeWorkerOptions
 {
     public const string SectionName = "TranscodeWorker";
+
+    /// <summary>
+    /// Which stages this worker consumes, comma separated. Defaults to both, which is right for a
+    /// single-instance deployment; compose runs one deployment per lane so the required lane always
+    /// has capacity.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately a string rather than an array: configuration providers *merge* arrays by index,
+    /// so an environment variable setting element 0 would leave a JSON-configured element 1 in
+    /// place, and a worker asked to serve one lane would quietly serve both.
+    /// </remarks>
+    public string Lanes { get; set; } = "Required,Optional";
+
+    /// <summary>The parsed <see cref="Lanes"/>, ignoring blanks and anything unrecognised.</summary>
+    public IReadOnlyList<TranscodeStage> ParsedLanes =>
+    [
+        .. Lanes.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(lane => Enum.TryParse<TranscodeStage>(lane, ignoreCase: true, out var stage)
+                ? (TranscodeStage?)stage
+                : null)
+            .Where(stage => stage is not null)
+            .Select(stage => stage!.Value)
+            .Distinct(),
+    ];
 
     public int MaxAttempts { get; set; } = 3;
 

@@ -65,6 +65,17 @@ public static class TranscodeLadder
     }
 
     /// <summary>
+    /// The rungs above the required ones: everything <see cref="Plan"/> covers that
+    /// <see cref="Required"/> does not. These only widen the quality menu of a video that already
+    /// plays, so they are queued separately and encoded after it is live.
+    /// </summary>
+    public static IReadOnlyList<LadderRung> Optional(int sourceHeight)
+    {
+        var required = Required(sourceHeight).Select(rung => rung.Height).ToHashSet();
+        return [.. Plan(sourceHeight).Where(rung => !required.Contains(rung.Height))];
+    }
+
+    /// <summary>
     /// Output width for a rung, preserving the source aspect ratio.
     /// </summary>
     /// <remarks>

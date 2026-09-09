@@ -33,7 +33,9 @@ services:
     networks:
       - backend
 
-  # Consumes transcode jobs and produces the HLS ladder. Stateless, so it scales out:
+  # Consumes the *required* rungs - the short jobs that make a video playable. Kept as its own
+  # deployment so a new upload always finds a free worker instead of waiting behind somebody
+  # else's 4K encode. Stateless, so it scales out:
   #   docker compose up --scale transcoder=4
   transcoder:
     build:
@@ -49,6 +51,34 @@ services:
       RabbitMq__Host: rabbitmq
       RabbitMq__User: ${RABBITMQ_USER}
       RabbitMq__Password: ${RABBITMQ_PASSWORD}
+      TranscodeWorker__Lanes: Required
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      rabbitmq:
+        condition: service_started
+    networks:
+      - backend
+
+  # Consumes the *optional* rungs: 720p and above. These are long jobs that only widen the quality
+  # menu of a video that already plays, so they get their own capacity and can be scaled - or
+  # stopped entirely - without affecting how fast uploads become watchable.
+  transcoder-optional:
+    build:
+      context: .
+      dockerfile: Worker/Dockerfile
+    environment:
+      DOTNET_ENVIRONMENT: Development
+      ConnectionStrings__DefaultConnection: "Host=postgres;Database=${DATABASE_NAME};Username=postgres;Password=${DATABASE_PASSWORD}"
+      ObjectStorage__Endpoint: "minio:9000"
+      ObjectStorage__AccessKey: ${OBJECT_STORAGE_ACCESS_KEY}
+      ObjectStorage__SecretKey: ${OBJECT_STORAGE_SECRET_KEY}
+      RabbitMq__Host: rabbitmq
+      RabbitMq__User: ${RABBITMQ_USER}
+      RabbitMq__Password: ${RABBITMQ_PASSWORD}
+      TranscodeWorker__Lanes: Optional
     depends_on:
       postgres:
         condition: service_healthy

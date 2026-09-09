@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
 using VideoHostingService.Models;
@@ -8,9 +9,9 @@ namespace VideoHostingService.Services;
 public interface ITranscodeQueue
 {
     /// <summary>
-    /// Publishes a transcode job. Throws when the broker is unreachable; callers decide whether
-    /// that is fatal - <see cref="VideoService.CreateVideoAsync"/> deliberately treats it as
-    /// recoverable and leaves the video Pending for <see cref="TranscodeSweeper"/> to re-publish.
+    /// Publishes a transcode job onto the queue for its <see cref="TranscodeRequest.Stage"/>.
+    /// Throws when the broker is unreachable; callers decide whether that is fatal - video upload
+    /// deliberately treats it as recoverable and leaves the video Pending for the sweeper.
     /// </summary>
     Task PublishAsync(TranscodeRequest request, CancellationToken cancellationToken);
 }
@@ -24,8 +25,8 @@ public class NullTranscodeQueue(ILogger<NullTranscodeQueue> logger) : ITranscode
     public Task PublishAsync(TranscodeRequest request, CancellationToken cancellationToken)
     {
         logger.LogWarning(
-            "No message broker is configured; video {VideoId} will stay in the Pending state.",
-            request.VideoId);
+            "No message broker is configured; the {Stage} transcode of video {VideoId} will not run.",
+            request.Stage, request.VideoId);
         return Task.CompletedTask;
     }
 }
@@ -74,13 +75,14 @@ public sealed class RabbitMqTranscodeQueue : ITranscodeQueue, IAsyncDisposable
 
         await target.BasicPublishAsync(
             exchange: string.Empty,
-            routingKey: configuration.QueueName,
+            routingKey: configuration.QueueFor(request.Stage),
             mandatory: false,
             basicProperties: properties,
             body: body,
             cancellationToken: cancellationToken);
 
-        logger.LogInformation("Enqueued transcode job for video {VideoId}", request.VideoId);
+        logger.LogInformation(
+            "Enqueued the {Stage} transcode of video {VideoId}", request.Stage, request.VideoId);
     }
 
     private async Task<IChannel> GetChannelAsync(CancellationToken cancellationToken)
@@ -104,14 +106,18 @@ public sealed class RabbitMqTranscodeQueue : ITranscodeQueue, IAsyncDisposable
             connection = await factory.CreateConnectionAsync(cancellationToken);
             channel = await connection.CreateChannelAsync(cancellationToken: cancellationToken);
 
-            // Declared by both ends so neither has to start first.
-            await channel.QueueDeclareAsync(
-                queue: configuration.QueueName,
-                durable: true,
-                exclusive: false,
-                autoDelete: false,
-                arguments: null,
-                cancellationToken: cancellationToken);
+            // Both declared by both ends, so neither the app nor the worker has to start first
+            // and neither stage's queue is missing when the other side publishes to it.
+            foreach (var queue in (string[])[configuration.RequiredQueueName, configuration.OptionalQueueName])
+            {
+                await channel.QueueDeclareAsync(
+                    queue: queue,
+                    durable: true,
+                    exclusive: false,
+                    autoDelete: false,
+                    arguments: null,
+                    cancellationToken: cancellationToken);
+            }
 
             return channel;
         }

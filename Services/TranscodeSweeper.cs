@@ -55,22 +55,70 @@ public class TranscodeSweeper(
         // sweeper duplicates jobs whenever the queue backs up.
         var pendingBefore = now.AddMinutes(-settings.PendingGraceMinutes);
 
-        var stranded = await context.Videos
+        var candidates = await context.Videos
             .AsNoTracking()
             .Where(v => v.ObjectName != null
                 && ((v.Status == VideoStatus.Pending && v.CreatedAt < pendingBefore)
                     || (v.Status == VideoStatus.Processing
-                        && (v.ProcessingStartedAt == null || v.ProcessingStartedAt < stuckBefore))))
+                        && (v.ProcessingStartedAt == null || v.ProcessingStartedAt < stuckBefore))
+                    // A Ready video whose ladder is still incomplete is only stranded if nothing
+                    // has touched it for a while; the optional rungs are normally still running.
+                    || (v.Status == VideoStatus.Ready
+                        && v.ProcessingStartedAt != null
+                        && v.ProcessingStartedAt < stuckBefore)))
             .OrderBy(v => v.CreatedAt)
             .Take(settings.BatchSize)
-            .Select(v => new TranscodeRequest(v.Id, v.PublicId, v.ObjectName!))
+            .Select(v => new
+            {
+                v.Id,
+                v.PublicId,
+                v.ObjectName,
+                v.Status,
+                v.SourceHeight,
+                Heights = v.Renditions.Select(r => r.Height).ToList(),
+            })
             .ToListAsync(cancellationToken);
 
-        foreach (var request in stranded)
+        foreach (var candidate in candidates)
         {
-            logger.LogInformation("Re-queueing stranded transcode job for video {VideoId}", request.VideoId);
-            await queue.PublishAsync(request, cancellationToken);
+            // A Ready video only needs the optional lane, and only if rungs are actually missing.
+            // Deciding that needs the ladder, which is not translatable to SQL.
+            if (candidate.Status == VideoStatus.Ready)
+            {
+                if (candidate.SourceHeight is not { } height)
+                {
+                    continue;
+                }
+
+                var missing = TranscodeLadder.Optional(height)
+                    .Any(rung => !candidate.Heights.Contains(rung.Height));
+
+                if (!missing)
+                {
+                    continue;
+                }
+
+                await PublishAsync(candidate.Id, candidate.PublicId, candidate.ObjectName!, TranscodeStage.Optional, cancellationToken);
+                continue;
+            }
+
+            await PublishAsync(candidate.Id, candidate.PublicId, candidate.ObjectName!, TranscodeStage.Required, cancellationToken);
         }
+    }
+
+    private async Task PublishAsync(
+        Guid videoId,
+        Guid publicId,
+        string objectName,
+        TranscodeStage stage,
+        CancellationToken cancellationToken)
+    {
+        logger.LogInformation(
+            "Re-queueing the stranded {Stage} transcode of video {VideoId}", stage, videoId);
+
+        await queue.PublishAsync(
+            new TranscodeRequest(videoId, publicId, objectName, stage),
+            cancellationToken);
     }
 }
 
