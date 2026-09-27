@@ -2,43 +2,54 @@ namespace VideoHostingService.Utilities;
 
 public interface IHumanTimeService
 {
-    string PrettyTimeDifference(DateTime since, DateTime now);
+    /// <summary>Renders how long ago <paramref name="since"/> was, relative to <paramref name="now"/>.</summary>
+    string PrettyTimeDifference(DateTimeOffset since, DateTimeOffset now);
 }
 
-public class HumanTimeService() : IHumanTimeService
+public class HumanTimeService : IHumanTimeService
 {
-    public string PrettyTimeDifference(DateTime since, DateTime now)
+    public string PrettyTimeDifference(DateTimeOffset since, DateTimeOffset now)
     {
-        var timespan = since - now;
+        // now - since, not since - now: the latter is negative for everything in the past,
+        // which made every timestamp read as "less than a minute ago".
+        var elapsed = now - since;
 
-        if (timespan.Seconds < 60)
+        if (elapsed < TimeSpan.Zero)
+        {
+            return "just now";
+        }
+
+        // Total*, not the component properties: TimeSpan.Minutes wraps at 60.
+        if (elapsed.TotalSeconds < 60)
         {
             return "less than a minute ago";
         }
-        else if (timespan.Minutes < 60)
+
+        if (elapsed.TotalMinutes < 60)
         {
-            return "less than an hour ago";
+            var minutes = (int)elapsed.TotalMinutes;
+            return minutes == 1 ? "a minute ago" : $"{minutes} minutes ago";
         }
-        else if (timespan.Minutes < 120)
+
+        if (elapsed.TotalHours < 24)
         {
-            return $"an hour ago";
+            var hours = (int)elapsed.TotalHours;
+            return hours == 1 ? "an hour ago" : $"{hours} hours ago";
         }
-        else if (timespan.Hours < 24)
+
+        if (elapsed.TotalDays < 30)
         {
-            return $"{timespan.Hours} hours ago";
+            var days = (int)elapsed.TotalDays;
+            return days == 1 ? "a day ago" : $"{days} days ago";
         }
-        else if (timespan.Days < 365)
+
+        if (elapsed.TotalDays < 365)
         {
-            return $"{since.Date}/{since.Day}";
+            var months = (int)(elapsed.TotalDays / 30);
+            return months == 1 ? "a month ago" : $"{months} months ago";
         }
-        else if (timespan.Days < (365 * 2))
-        {
-            return "a year ago";
-        }
-        else
-        {
-            var yearsAgo = timespan.Days / 365;
-            return $"{yearsAgo} years ago";
-        }
+
+        var years = (int)(elapsed.TotalDays / 365);
+        return years == 1 ? "a year ago" : $"{years} years ago";
     }
 }

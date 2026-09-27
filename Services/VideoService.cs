@@ -1,175 +1,307 @@
+using Microsoft.AspNetCore.Components.Forms;
+using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Minio;
 using Minio.DataModel.Args;
-using Minio.Exceptions;
-using VideoHostingService.Components.Pages;
 using VideoHostingService.Models;
 using VideoHostingService.Models.Identity;
-using Video = VideoHostingService.Models.Video;
 using VideoHostingService.Utilities;
 
 namespace VideoHostingService.Services;
 
 public interface IVideoService
 {
-    Task<string> UploadThumbnail(Stream thumbnailFileStream, long thumbnailSize, string contentType, CancellationToken token);
-    Task<string> UploadVideo(Stream videoFileStream, CancellationToken token, IProgress<ProgressReport> progress = null);
-    Task AddVideo(VideoUpload video, CancellationToken token);
-    Video GetVideoById(Guid id);
-    Task DeleteVideo(Guid id);
-    Task<Video> EditVideo(Guid id, Video video);
-    Task<List<Video>> GetVideos(int size);
+    /// <summary>
+    /// Uploads the supplied files to object storage and, only if that succeeds, saves the video
+    /// row pointing at them. Returns the new video's <see cref="Video.PublicId"/>.
+    /// </summary>
+    Task<Guid> CreateVideoAsync(VideoUpload upload, string userId, IProgress<UploadProgress>? progress, CancellationToken cancellationToken);
+
+    Task<Video?> GetByPublicIdAsync(Guid publicId, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<Video>> GetRecentAsync(int size, CancellationToken cancellationToken);
+
+    /// <summary>Returns false when the video does not exist or is not owned by <paramref name="userId"/>.</summary>
+    Task<bool> DeleteAsync(Guid publicId, string userId, CancellationToken cancellationToken);
+
+    Task<bool> EditAsync(Guid publicId, string userId, string title, string description, CancellationToken cancellationToken);
 }
 
-public class VideoService(ApplicationDbContext context, IMinioClient minioClient, IConfiguration configuration) : IVideoService
+public class VideoService(
+    ApplicationDbContext context,
+    IMinioClient minioClient,
+    IOptions<MaxUploadSizes> uploadSizes,
+    IOptions<ObjectStorageConfiguration> storageOptions,
+    ITranscodeQueue transcodeQueue,
+    ILogger<VideoService> logger) : IVideoService
 {
-    public static readonly string videoBucketName = "videos";
-    public static readonly string thumbnailBucketName = "thumbnails";
+    private static readonly FileExtensionContentTypeProvider ContentTypes = new();
 
-    public async Task<string> UploadThumbnail(Stream thumbnailFileStream,
-    long thumbnailSize, string extensionFromSource, string contentType,
-    CancellationToken token = null)
+    private readonly MaxUploadSizes sizes = uploadSizes.Value;
+    private readonly string bucket = storageOptions.Value.BucketName;
+
+    public async Task<Guid> CreateVideoAsync(VideoUpload upload, string userId, IProgress<UploadProgress>? progress, CancellationToken cancellationToken)
     {
-        if(!ImageExtensions.IsValidImageHeader(thumbnailFileStream, extensionFromSource))
+        ArgumentNullException.ThrowIfNull(upload);
+        ArgumentException.ThrowIfNullOrWhiteSpace(userId);
+
+        if (upload.VideoFile is null)
         {
-            throw new InvalidFileException();
+            throw new InvalidFileException("No video file was supplied.");
         }
 
-        var sizes = configuration.GetSection("MaxUploadSizes").Get<MaxUploadSizes>();
+        // Upload first: a row that points at objects which failed to upload is worse than an
+        // object with no row, and the objects are rolled back below if the save fails.
+        var videoObject = await UploadAsync(
+            upload.VideoFile,
+            MediaKeys.VideoPrefix,
+            sizes.MaxVideoSize,
+            AcceptedExtensions.PermittedVideoExtensions,
+            VideoValidator.HeaderSize,
+            (header, ext) => VideoValidator.IsValidVideoHeader(header, ext),
+            progress,
+            cancellationToken);
 
+        string? thumbnailObject = null;
+        Video video;
         try
         {
-            var beArgs = new BucketExistsArgs()
-                .WithBucket("vaultvid");
-            bool found = await minioClient.BucketExistsAsync(beArgs, token).ConfigureAwait(false);
-            if (!found)
+            if (upload.Thumbnail is not null)
             {
-                var mbArgs = new MakeBucketArgs()
-                    .WithBucket("vaultvid");
-                await minioClient.MakeBucketAsync(mbArgs, token).ConfigureAwait(false);
+                thumbnailObject = await UploadAsync(
+                    upload.Thumbnail,
+                    MediaKeys.ThumbnailPrefix,
+                    sizes.MaxThumbnailSize,
+                    AcceptedExtensions.PermittedImageExtensions,
+                    ImageValidator.HeaderSize,
+                    (header, ext) => ImageValidator.IsValidImageHeader(header, ext),
+                    progress: null,
+                    cancellationToken);
             }
 
-            var trustedFileName = Path.GetRandomFileName();
-            var guid = Guid.NewGuid();
-            var filename = Path.Join("thumbnails", guid);
+            var now = DateTimeOffset.UtcNow;
+            video = new Video
+            {
+                Title = upload.Title,
+                Description = upload.Description,
+                UserId = userId,
+                ObjectName = videoObject,
+                ThumbnailLocation = thumbnailObject,
+                CreatedAt = now,
+                EditedAt = now,
+            };
 
-            var args = new PutObjectArgs()
-                .WithBucket("vaultvid")
-                .WtihObject(filename)
-                .WithStreamData(thumbnailFileStream)
-                .WithObjectSize(thumbnailSize)
-                .WithContentType(contentType);
-            await minioClient.PutObjectAsync(args, token);
-
-            var statObjectArgs = new StatObjectArgs()
-                .WithBucket("vaultvid")
-                .WithObject(filename);
-            var objectStat = await minioClient.StatObjectAsync(statObjectArgs, token);
-
-            return objectStat.ObjectName;
+            context.Videos.Add(video);
+            await context.SaveChangesAsync(cancellationToken);
         }
-        catch (MinioException e)
+        catch
         {
-            Console.WriteLine("File Upload Error: {0}", e.Message);
+            // Don't leave objects behind for a video that was never recorded.
+            await TryRemoveObjectAsync(videoObject);
+            await TryRemoveObjectAsync(thumbnailObject);
             throw;
         }
-    }
 
-    public async Task<string> UploadVideo(Stream videoFileStream, string extensionFromSource, string contentType,
-    IProgress<ProgressReport> progress = null, CancellationToken token = null)
-    {
-        if (!VideoValidator.IsValidVideoHeader(thumbnailFileStream, extensionFromSource))
-        {
-            throw new InvalidFileException();
-        }
-        
-        var sizes = configuration.GetSection("MaxUploadSizes").Get<MaxUploadSizes>();
-
+        // Deliberately outside the rollback above: the source object and the row are both valid,
+        // so a broker outage must not throw the upload away. The video simply stays Pending and
+        // TranscodeSweeper re-publishes the job once the broker is back.
         try
         {
-            var beArgs = new BucketExistsArgs()
-           .WithBucket("vaultvid");
-            bool found = await minioClient.BucketExistsAsync(beArgs, token).ConfigureAwait(false);
-            if (!found)
-            {
-                var mbArgs = new MakeBucketArgs()
-                    .WithBucket("vaultvid");
-                await minioClient.MakeBucketAsync(mbArgs, token).ConfigureAwait(false);
-            }
-
-            var trustedFileName = Path.GetRandomFileName();
-            var guid = Guid.NewGuid();
-            var filename = Path.Join("videos", guid);
-
-            var args = new PutObjectArgs()
-                .WithBucket("vaultvid")
-                .WtihObject(filename)
-                .WithStreamData(thumbnailFileStream)
-                .WithProgress(progress)
-                .WithObjectSize(thumbnailSize)
-                .WithContentType(contentType);
-            await minioClient.PutObjectAsync(args, token);
-
-            var statObjectArgs = new StatObjectArgs()
-                .WithBucket("vaultvid")
-                .WithObject(filename);
-            var objectStat = await minioClient.StatObjectAsync(statObjectArgs, token);
-
-            return objectStat.ObjectName;
+            await transcodeQueue.PublishAsync(
+                new TranscodeRequest(video.Id, video.PublicId, videoObject),
+                cancellationToken);
         }
-        catch (MinioException e)
+        catch (Exception e)
         {
-            Console.Error.WriteLine("File Upload Error: {0}", e.Message);
-            throw;
-        }
-    }
-
-    public async Task AddVideo(VideoUpload video, CancellationToken token)
-    {
-        if (video == null)
-        {
-            throw new ArgumentNullException(nameof(video), "Video information can't be null");
+            logger.LogError(e, "Could not enqueue transcoding for video {VideoId}; it will be re-queued by the sweeper", video.Id);
         }
 
-        var videoDb = new Video
-        {
-            Title = video.Title,
-            Description = video.Description,
-            CreatedAt = DateTimeOffset.UtcNow
-        };
-        context.Videos.Add(videoDb);
-        await context.SaveChangesAsync(token);
+        return video.PublicId;
     }
 
-    public Video GetVideoById(Guid id)
-    {
-        return context.Videos.Find(id) ?? throw new KeyNotFoundException($"Video with ID {id} not found");
-    }
+    public Task<Video?> GetByPublicIdAsync(Guid publicId, CancellationToken cancellationToken)
+        => context.Videos
+            .AsNoTracking()
+            .Include(v => v.Renditions.OrderBy(r => r.Height))
+            .FirstOrDefaultAsync(v => v.PublicId == publicId, cancellationToken);
 
-    public async Task DeleteVideo(Guid id)
-    {
-        var video = context.Videos.Find(id) ?? throw new KeyNotFoundException("Video with ID {id} not found.");
-        context.Videos.Remove(video);
-
-        await context.SaveChangesAsync();
-    }
-
-    public async Task<Video> EditVideo(Guid id, Video video)
-    {
-        var existingVideo = context.Videos.Find(id) ?? throw new KeyNotFoundException("Video with ID {id} not found.");
-        existingVideo.Title = video.Title;
-        existingVideo.Description = video.Description;
-
-        await context.SaveChangesAsync();
-
-        return existingVideo;
-    }
-
-    public async Task<List<Video>> GetVideos(int size)
-    {
-        return await context.Videos
+    public async Task<IReadOnlyList<Video>> GetRecentAsync(int size, CancellationToken cancellationToken)
+        => await context.Videos
+            .AsNoTracking()
             .OrderByDescending(v => v.CreatedAt)
             .Take(size)
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
+
+    public async Task<bool> DeleteAsync(Guid publicId, string userId, CancellationToken cancellationToken)
+    {
+        var video = await context.Videos.FirstOrDefaultAsync(v => v.PublicId == publicId, cancellationToken);
+        if (video is null || !string.Equals(video.UserId, userId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        context.Videos.Remove(video);
+        await context.SaveChangesAsync(cancellationToken);
+
+        await TryRemoveObjectAsync(video.ObjectName);
+        await TryRemoveObjectAsync(video.ThumbnailLocation);
+        await TryRemovePrefixAsync(MediaKeys.HlsDirectory(video.Id));
+
+        return true;
+    }
+
+    public async Task<bool> EditAsync(Guid publicId, string userId, string title, string description, CancellationToken cancellationToken)
+    {
+        var video = await context.Videos.FirstOrDefaultAsync(v => v.PublicId == publicId, cancellationToken);
+        if (video is null || !string.Equals(video.UserId, userId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        video.Title = title;
+        video.Description = description;
+        video.EditedAt = DateTimeOffset.UtcNow;
+
+        await context.SaveChangesAsync(cancellationToken);
+        return true;
+    }
+
+    private async Task<string> UploadAsync(
+        IBrowserFile file,
+        string prefix,
+        long maxSize,
+        string[] permittedExtensions,
+        int headerSize,
+        Func<byte[], string, bool> isValidHeader,
+        IProgress<UploadProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        var extension = Path.GetExtension(file.Name).ToLowerInvariant();
+        if (!permittedExtensions.Contains(extension))
+        {
+            throw new InvalidFileException($"'{extension}' is not an accepted file type.");
+        }
+
+        if (file.Size > maxSize)
+        {
+            throw new InvalidFileException($"File is larger than the {maxSize / (1024 * 1024)} MB limit.");
+        }
+
+        // Ownership passes to the wrapper streams below, which dispose it.
+        var source = file.OpenReadStream(maxSize, cancellationToken);
+
+        // OpenReadStream is forward-only, so the header has to be buffered and replayed rather
+        // than seeked back over.
+        var header = new byte[headerSize];
+        var headerLength = await source.ReadAtLeastAsync(header, headerSize, throwOnEndOfStream: false, cancellationToken);
+        if (headerLength < headerSize)
+        {
+            Array.Resize(ref header, headerLength);
+        }
+
+        if (!isValidHeader(header, extension))
+        {
+            throw new InvalidFileException("The file contents don't match its extension.");
+        }
+
+        Stream body = new PrefixedStream(header, source);
+        if (progress is not null)
+        {
+            body = new ProgressStream(body, file.Size, progress);
+        }
+
+        await using (body)
+        {
+            await EnsureBucketAsync(cancellationToken);
+
+            var objectName = $"{prefix}/{Guid.NewGuid():N}{extension}";
+
+            // The browser-supplied content type is not trusted; derive it from the extension that
+            // the magic bytes above were checked against.
+            if (!ContentTypes.TryGetContentType(objectName, out var contentType))
+            {
+                contentType = "application/octet-stream";
+            }
+
+            var args = new PutObjectArgs()
+                .WithBucket(bucket)
+                .WithObject(objectName)
+                .WithStreamData(body)
+                .WithObjectSize(file.Size)
+                .WithContentType(contentType);
+
+            await minioClient.PutObjectAsync(args, cancellationToken);
+
+            return objectName;
+        }
+    }
+
+    private async Task EnsureBucketAsync(CancellationToken cancellationToken)
+    {
+        var exists = await minioClient
+            .BucketExistsAsync(new BucketExistsArgs().WithBucket(bucket), cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!exists)
+        {
+            await minioClient
+                .MakeBucketAsync(new MakeBucketArgs().WithBucket(bucket), cancellationToken)
+                .ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Removes every object under a prefix. Used for a video's HLS tree, which is many objects
+    /// (one playlist plus a segment per six seconds) whose names only the listing knows.
+    /// </summary>
+    private async Task TryRemovePrefixAsync(string prefix)
+    {
+        try
+        {
+            var listArgs = new ListObjectsArgs()
+                .WithBucket(bucket)
+                .WithPrefix(prefix)
+                .WithRecursive(true);
+
+            var keys = new List<string>();
+            await foreach (var item in minioClient.ListObjectsEnumAsync(listArgs, CancellationToken.None))
+            {
+                keys.Add(item.Key);
+            }
+
+            if (keys.Count == 0)
+            {
+                return;
+            }
+
+            await minioClient.RemoveObjectsAsync(
+                new RemoveObjectsArgs().WithBucket(bucket).WithObjects(keys),
+                CancellationToken.None);
+        }
+        catch (Exception e)
+        {
+            logger.LogWarning(e, "Could not remove objects under prefix {Prefix}", prefix);
+        }
+    }
+
+    private async Task TryRemoveObjectAsync(string? objectName)
+    {
+        if (string.IsNullOrWhiteSpace(objectName))
+        {
+            return;
+        }
+
+        try
+        {
+            // Deliberately not cancellable: this is cleanup and often runs while unwinding.
+            await minioClient.RemoveObjectAsync(
+                new RemoveObjectArgs().WithBucket(bucket).WithObject(objectName),
+                CancellationToken.None);
+        }
+        catch (Exception e)
+        {
+            logger.LogWarning(e, "Could not remove orphaned object {ObjectName}", objectName);
+        }
     }
 }

@@ -1,0 +1,17 @@
+@* Account links for the Blazor side of the app. The targets are the scaffolded Identity
+   Razor Pages under Areas/Identity, so logout has to be a real form post. *@
+
+<AuthorizeView>
+    <Authorized>
+        <a href="Identity/Account/Manage/Index">Hello, @context.User.Identity?.Name!</a>
+        <form action="Identity/Account/Logout" method="post" class="d-inline">
+            <AntiforgeryToken />
+            <input type="hidden" name="returnUrl" value="/" />
+            <button type="submit" class="btn btn-link">Log out</button>
+        </form>
+    </Authorized>
+    <NotAuthorized>
+        <a href="Identity/Account/Register">Register</a>
+        <a href="Identity/Account/Login">Log in</a>
+    </NotAuthorized>
+</AuthorizeView>

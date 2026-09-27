@@ -22,6 +22,20 @@
     <PackageReference Include="Minio" Version="6.0.4" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.4" />
     <PackageReference Include="StackExchange.Redis" Version="2.8.41" />
+    <PackageReference Include="RabbitMQ.Client" Version="7.1.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="Core\VideoHostingService.Core.csproj" />
+  </ItemGroup>
+
+  <!-- Core and Worker are their own projects nested under this one's directory, so the Web SDK's
+       default globs would otherwise compile their files into this assembly as well. -->
+  <ItemGroup>
+    <Compile Remove="Core\**;Worker\**" />
+    <Content Remove="Core\**;Worker\**" />
+    <None Remove="Core\**;Worker\**" />
+    <EmbeddedResource Remove="Core\**;Worker\**" />
   </ItemGroup>
 
 </Project>

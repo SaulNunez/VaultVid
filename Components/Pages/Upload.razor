@@ -1,99 +1,212 @@
 @page "/upload"
-@using AspNetCoreGeneratedDocument
-@using VideoHostingService.Models
+@attribute [Authorize]
+@implements IAsyncDisposable
+
 @inject IJSRuntime JS
-@inject IConfiguration Configuration
-@inject IWebHostEnvironment Environment
-@inject VideoHostingService.Services.IVideoService VideoService
+@inject IVideoService VideoService
+@inject NavigationManager Navigation
+@inject ILogger<Upload> Logger
 
 <PageTitle>Upload</PageTitle>
 
 <h1>Upload</h1>
 
-<EditForm Model="@formModel" OnValidSubmit="HandleValidSubmit">
+<EditForm Model="formModel" OnValidSubmit="HandleValidSubmit">
     <DataAnnotationsValidator />
     <ValidationSummary />
 
-    <div>
-        <label>Title:</label>
-        <InputText @bind-Value="formModel.Title" class="form-control" />
+    <div class="mb-3">
+        <label for="video-title" class="form-label">Title</label>
+        <InputText id="video-title" @bind-Value="formModel.Title" class="form-control" disabled="@isUploading" />
     </div>
 
-    <div>
-        <label>Description:</label>
-        <InputText type="textarea" @bind-Value="formModel.Description" class="form-control" />
+    <div class="mb-3">
+        <label for="video-description" class="form-label">Description</label>
+        <InputTextArea id="video-description" @bind-Value="formModel.Description" class="form-control" disabled="@isUploading" />
     </div>
 
-    <div>
-        <img @ref="previewImageElem" style="max-width:200px;max-height:200px" />
-        <label>Thumbnail:</label>
-        <InputFile @ref="inputFile" OnChange="UploadThumbnail" />
+    <div class="mb-3">
+        <label for="video-thumbnail" class="form-label">Thumbnail (optional)</label>
+        <InputFile id="video-thumbnail"
+                   @ref="thumbnailInput"
+                   OnChange="OnThumbnailChanged"
+                   accept="@AcceptedExtensions.ImageAcceptAttribute"
+                   class="form-control"
+                   disabled="@isUploading" />
+        <img @ref="previewImageElem"
+             class="mt-2 @(hasThumbnail ? null : "d-none")"
+             style="max-width:200px;max-height:200px"
+             alt="Thumbnail preview" />
     </div>
 
-    <div>
-        <label>Video:</label>
-        <InputFile OnChange="UploadVideo" />
-        @if (isUploadingVideo)
-        {
-            <div class="progress">
-                <div class="progress-bar" role="progressbar" style="width:@string.Format("{0:P0}", progressPercent);"
-                    aria-valuenow="@string.Format("{0:P0}", progressPercent)" aria-valuemin="0" aria-valuemax="100">
-                    @string.Format("{0:P0}", progressPercent)
-                </div>
+    <div class="mb-3">
+        <label for="video-file" class="form-label">Video</label>
+        <InputFile id="video-file"
+                   OnChange="OnVideoChanged"
+                   accept="@AcceptedExtensions.VideoAcceptAttribute"
+                   class="form-control"
+                   disabled="@isUploading" />
+    </div>
+
+    @if (isUploading)
+    {
+        <div class="progress mb-3">
+            <div class="progress-bar"
+                 role="progressbar"
+                 aria-label="Upload progress"
+                 style="width:@(progressPercent)%"
+                 aria-valuenow="@progressPercent"
+                 aria-valuemin="0"
+                 aria-valuemax="100">
+                @progressPercent%
             </div>
-        }
-    </div>
+        </div>
+    }
 
-    <button type="submit" class="btn btn-primary">Submit</button>
+    <p aria-live="polite" class="visually-hidden">
+        @(isUploading ? $"Uploading, {progressPercent} percent complete." : null)
+    </p>
+
+    @if (errorMessage is not null)
+    {
+        <p class="validation-message" role="alert">@errorMessage</p>
+    }
+
+    <button type="submit" class="btn btn-primary" disabled="@isUploading">
+        @(isUploading ? "Uploading…" : "Submit")
+    </button>
+
+    @if (isUploading)
+    {
+        <button type="button" class="btn btn-secondary ms-2" @onclick="CancelUpload">Cancel</button>
+    }
 </EditForm>
 
 @code {
-    private VideoUpload formModel = new();
-    private InputFile? inputFile;
+    private readonly VideoUpload formModel = new();
+
+    private InputFile? thumbnailInput;
     private ElementReference previewImageElem;
+    private IJSObjectReference? previewModule;
+
+    private bool hasThumbnail;
+    private bool isUploading;
     private int progressPercent;
+    private string? errorMessage;
+    private CancellationTokenSource? uploadCts;
 
-    private bool isUploadingVideo = false;
+    [CascadingParameter]
+    private Task<AuthenticationState>? AuthenticationState { get; set; }
 
-    private async Task ShowPreview() => await JS.InvokeVoidAsync(
-    "previewImage", inputFile!.Element, previewImageElem);
-
-    private void UploadThumbnail(InputFileChangeEventArgs e){
-        ShowPreview();
-
-        var contentType = imageFile.ContentType;
-        var uploadedFileName = imageFile.Name;
-        var fileSize = imageFile.Size;
-
-        string ext = Path.GetExtension(uploadedFileName).ToLowerInvariant();
-
-        var stream = e.File.OpenReadStream(maxFileSize);
-        var tokenSource = new CancellationTokenSource();
-        var location = await VideoService.UploadThumbnail(stream, fileSize, ext, contentType, tokenSource.Token);
-    }
-
-    private void UpdateVideoUploadProgress(ProgressReport currentProgress) {
-        progressPercent = currentProgress.Percentage();
-        StateHasChanged();
-    }
-
-    private async Task UploadVideo(InputFileChangeEventArgs e)
+    private async Task OnThumbnailChanged(InputFileChangeEventArgs e)
     {
-        var contentType = e.File.ContentType;
-        var fileSize = e.File.Size;
+        formModel.Thumbnail = e.File;
+        hasThumbnail = true;
+        errorMessage = null;
 
-        string ext = Path.GetExtension(uploadedFileName).ToLowerInvariant();
+        try
+        {
+            previewModule ??= await JS.InvokeAsync<IJSObjectReference>(
+                "import", "./Components/Pages/Upload.razor.js");
 
-        var progress = new Progress<ProgressReport>(UpdateVideoUploadProgress);
-        var stream = e.File.OpenReadStream(maxFileSize);
-        var tokenSource = new CancellationTokenSource();
-        var location = await VideoService.UploadVideo(stream, fileSize, ext, contentType, progress, tokenSource.Token);
+            await previewModule.InvokeVoidAsync("previewImage", thumbnailInput!.Element, previewImageElem);
+        }
+        catch (JSDisconnectedException)
+        {
+            // Circuit gone; the preview is cosmetic.
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Could not render the thumbnail preview");
+        }
     }
 
-    private async Task HandleValidSubmit(CancellationToken token)
+    // The file is only recorded here; the actual upload happens on submit so that abandoning
+    // the form doesn't leave orphaned objects in storage.
+    private void OnVideoChanged(InputFileChangeEventArgs e)
     {
-        await VideoService.AddVideo(formModel, token);
+        formModel.VideoFile = e.File;
+        errorMessage = null;
+    }
+
+    private async Task HandleValidSubmit()
+    {
+        if (isUploading || AuthenticationState is null)
+        {
+            return;
+        }
+
+        var user = (await AuthenticationState).User;
+        var userId = user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+
+        if (string.IsNullOrEmpty(userId))
+        {
+            errorMessage = "You need to be logged in to upload.";
+            return;
+        }
+
+        isUploading = true;
+        errorMessage = null;
+        progressPercent = 0;
+
+        uploadCts = new CancellationTokenSource();
+
+        // Progress arrives on a background thread, so hop back onto the renderer.
+        var progress = new Progress<UploadProgress>(report =>
+            _ = InvokeAsync(() =>
+            {
+                progressPercent = report.Percentage;
+                StateHasChanged();
+            }));
+
+        try
+        {
+            var publicId = await VideoService.CreateVideoAsync(formModel, userId, progress, uploadCts.Token);
+            Navigation.NavigateTo($"video/{publicId}");
+        }
+        catch (OperationCanceledException)
+        {
+            errorMessage = "Upload cancelled.";
+        }
+        catch (InvalidFileException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Upload failed");
+            errorMessage = "The upload failed. Try again.";
+        }
+        finally
+        {
+            isUploading = false;
+            uploadCts?.Dispose();
+            uploadCts = null;
+        }
+    }
+
+    private void CancelUpload() => uploadCts?.Cancel();
+
+    public async ValueTask DisposeAsync()
+    {
+        // Navigating away has to stop an in-flight upload rather than let it run on detached.
+        if (uploadCts is not null)
+        {
+            await uploadCts.CancelAsync();
+            uploadCts.Dispose();
+            uploadCts = null;
+        }
+
+        try
+        {
+            if (previewModule is not null)
+            {
+                await previewModule.DisposeAsync();
+            }
+        }
+        catch (JSDisconnectedException)
+        {
+            // Circuit already torn down.
+        }
     }
 }
-#line default
-#line hidden

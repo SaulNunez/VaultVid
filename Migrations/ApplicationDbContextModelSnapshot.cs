@@ -239,15 +239,17 @@ namespace VideoHostingService.Migrations
                     b.Property<DateTimeOffset>("EditedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<Guid>("UserId")
-                        .HasColumnType("uuid");
+                    b.Property<string>("UserId")
+                        .IsRequired()
+                        .HasColumnType("text");
 
                     b.Property<int>("VoteSense")
                         .HasColumnType("integer");
 
                     b.HasKey("Id");
 
-                    b.HasIndex("CommentId");
+                    b.HasIndex("CommentId", "UserId")
+                        .IsUnique();
 
                     b.ToTable("CommentLikes");
                 });
@@ -274,7 +276,13 @@ namespace VideoHostingService.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("UserId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.HasKey("Id");
+
+                    b.HasIndex("UserId");
 
                     b.ToTable("Playlists");
                 });
@@ -292,25 +300,62 @@ namespace VideoHostingService.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<double?>("DurationSeconds")
+                        .HasColumnType("double precision");
+
                     b.Property<DateTimeOffset>("EditedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<string>("ObjectName")
-                        .IsRequired()
+                    b.Property<string>("MasterPlaylistObjectName")
                         .HasColumnType("text");
+
+                    b.Property<string>("ObjectName")
+                        .HasColumnType("text");
+
+                    b.Property<int?>("PlaylistId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ProcessingError")
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset?>("ProcessingStartedAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<Guid>("PublicId")
                         .HasColumnType("uuid");
 
+                    b.Property<int?>("SourceHeight")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("SourceWidth")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer");
+
                     b.Property<string>("ThumbnailLocation")
-                        .IsRequired()
                         .HasColumnType("text");
 
                     b.Property<string>("Title")
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("UserId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.HasKey("Id");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("PlaylistId");
+
+                    b.HasIndex("PublicId")
+                        .IsUnique();
+
+                    b.HasIndex("Status");
+
+                    b.HasIndex("UserId");
 
                     b.ToTable("Videos");
                 });
@@ -330,6 +375,14 @@ namespace VideoHostingService.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("UserId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("UserName")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<Guid>("VideoId")
                         .HasColumnType("uuid");
 
@@ -337,6 +390,8 @@ namespace VideoHostingService.Migrations
                         .HasColumnType("text");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("UserId");
 
                     b.HasIndex("VideoId");
 
@@ -357,8 +412,9 @@ namespace VideoHostingService.Migrations
                     b.Property<DateTimeOffset>("EditedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<Guid>("UserId")
-                        .HasColumnType("uuid");
+                    b.Property<string>("UserId")
+                        .IsRequired()
+                        .HasColumnType("text");
 
                     b.Property<Guid>("VideoId")
                         .HasColumnType("uuid");
@@ -368,9 +424,45 @@ namespace VideoHostingService.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("VideoId");
+                    b.HasIndex("VideoId", "UserId")
+                        .IsUnique();
 
                     b.ToTable("VideoLikes");
+                });
+
+            modelBuilder.Entity("VideoHostingService.Models.VideoRendition", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("BandwidthBitsPerSecond")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("CompletedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Height")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("PlaylistObjectName")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("VideoId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Width")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("VideoId", "Height")
+                        .IsUnique();
+
+                    b.ToTable("VideoRenditions");
                 });
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<string>", b =>
@@ -435,6 +527,13 @@ namespace VideoHostingService.Migrations
                     b.Navigation("Comment");
                 });
 
+            modelBuilder.Entity("VideoHostingService.Models.Video", b =>
+                {
+                    b.HasOne("VideoHostingService.Models.Playlist", null)
+                        .WithMany("Videos")
+                        .HasForeignKey("PlaylistId");
+                });
+
             modelBuilder.Entity("VideoHostingService.Models.VideoComment", b =>
                 {
                     b.HasOne("VideoHostingService.Models.Video", "Video")
@@ -457,9 +556,27 @@ namespace VideoHostingService.Migrations
                     b.Navigation("Video");
                 });
 
+            modelBuilder.Entity("VideoHostingService.Models.VideoRendition", b =>
+                {
+                    b.HasOne("VideoHostingService.Models.Video", "Video")
+                        .WithMany("Renditions")
+                        .HasForeignKey("VideoId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Video");
+                });
+
+            modelBuilder.Entity("VideoHostingService.Models.Playlist", b =>
+                {
+                    b.Navigation("Videos");
+                });
+
             modelBuilder.Entity("VideoHostingService.Models.Video", b =>
                 {
                     b.Navigation("Comments");
+
+                    b.Navigation("Renditions");
 
                     b.Navigation("VideoLikes");
                 });

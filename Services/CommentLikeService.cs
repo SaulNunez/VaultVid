@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
 using VideoHostingService.Models;
 using VideoHostingService.Models.Identity;
@@ -7,73 +8,93 @@ namespace VideoHostingService.Services;
 
 public interface ICommentLikeService
 {
-    Task AddOrUpdate(Guid commentId, Guid userId, CommentLike commentLike);
-    Task Delete(Guid commentLikeId);
-    Dictionary<VoteSense, int> GetVoteInformationOnComment(Guid commentId);
+    Task SetVoteAsync(int commentId, string userId, VoteSense voteSense, CancellationToken cancellationToken);
+
+    Task<Dictionary<VoteSense, int>> GetVoteTotalsAsync(int commentId, CancellationToken cancellationToken);
 }
 
 public class CommentLikeService(ApplicationDbContext context, IDistributedCache cache) : ICommentLikeService
 {
-    public async Task AddOrUpdate(Guid commentId, Guid userId, CommentLike commentLike)
+    private static readonly DistributedCacheEntryOptions CacheOptions = new()
     {
-        var comment = context.VideoComments.Find(commentId) ?? throw new KeyNotFoundException($"Comment with ID {commentId} not found");
+        AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(30),
+    };
 
-        var existingLike = context.CommentLikes.Where(x => x.UserId == userId).FirstOrDefault();
+    public async Task SetVoteAsync(int commentId, string userId, VoteSense voteSense, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(userId);
 
-        if (existingLike == null)
+        var commentExists = await context.VideoComments.AnyAsync(c => c.Id == commentId, cancellationToken);
+        if (!commentExists)
         {
-            comment.CommentLikes.Add(commentLike);
+            throw new KeyNotFoundException($"Comment with ID {commentId} not found");
+        }
+
+        // Scoped to the comment as well as the user; filtering on the user alone would pick up
+        // that user's vote on some other comment.
+        var existingLike = await context.CommentLikes
+            .FirstOrDefaultAsync(l => l.CommentId == commentId && l.UserId == userId, cancellationToken);
+
+        if (existingLike is null)
+        {
+            if (voteSense == VoteSense.NONE)
+            {
+                return;
+            }
+
+            context.CommentLikes.Add(new CommentLike
+            {
+                CommentId = commentId,
+                UserId = userId,
+                VoteSense = voteSense,
+                CreatedAt = DateTimeOffset.UtcNow,
+                EditedAt = DateTimeOffset.UtcNow,
+            });
+        }
+        else if (voteSense == VoteSense.NONE)
+        {
+            context.CommentLikes.Remove(existingLike);
         }
         else
         {
-            existingLike.VoteSense = commentLike.VoteSense;
+            existingLike.VoteSense = voteSense;
             existingLike.EditedAt = DateTimeOffset.UtcNow;
         }
 
-        await context.SaveChangesAsync();
+        await context.SaveChangesAsync(cancellationToken);
+
+        // The totals below are cached, so they have to be dropped when a vote changes.
+        await cache.RemoveAsync(CacheKey(commentId), cancellationToken);
     }
 
-    public async Task Delete(Guid commentLikeId)
+    public async Task<Dictionary<VoteSense, int>> GetVoteTotalsAsync(int commentId, CancellationToken cancellationToken)
     {
-        var commentLike = context.CommentLikes.Find(commentLikeId) ?? throw new KeyNotFoundException($"Video like with ID {commentLikeId} not found");
-        context.CommentLikes.Remove(commentLike);
-        await context.SaveChangesAsync();
-    }
+        var key = CacheKey(commentId);
 
-    public Dictionary<VoteSense, int> GetVoteInformationOnComment(Guid commentId)
-    {
-        //While collisions between other object types in the cache with a GUID are pretty much impossible
-        //Having a prefix allows quick debugging of the cache
-        var idAsString = $"CommentLike_{commentId}";
-
-        var cacheInformation = cache.GetString(idAsString);
-
-        if (cacheInformation == null)
+        var cached = await cache.GetStringAsync(key, cancellationToken);
+        if (cached is not null)
         {
-            var comment = context.VideoComments.Find(commentId) ?? throw new KeyNotFoundException($"Comment with ID {commentId} not found");
-
-            var likeInformation = comment.CommentLikes
-                .GroupBy(x => x.VoteSense)
-                .Select(group => new { voteSense = group.Key, count = group.Count() });
-
-            Dictionary<VoteSense, int> votingInformation = [];
-            foreach (var item in likeInformation)
+            var deserialized = JsonSerializer.Deserialize<Dictionary<VoteSense, int>>(cached);
+            if (deserialized is not null)
             {
-                votingInformation.Add(item.voteSense, item.count);
+                return deserialized;
             }
-            var options = new DistributedCacheEntryOptions
-            {
-                AbsoluteExpirationRelativeToNow = new TimeSpan(0, 30, 0)
-            };
+        }
 
-            var jsonData = JsonSerializer.Serialize(votingInformation);
-            cache.SetString(idAsString, jsonData, options);
-            return votingInformation;
-        }
-        else
-        {
-            var votingInformation = JsonSerializer.Deserialize<Dictionary<VoteSense, int>>(cacheInformation) ?? throw new InvalidDataException($"Cache entry for comment {commentId} had invalid information");
-            return votingInformation;
-        }
+        // Aggregate in the database rather than loading every like row into memory.
+        var totals = await context.CommentLikes
+            .AsNoTracking()
+            .Where(l => l.CommentId == commentId)
+            .GroupBy(l => l.VoteSense)
+            .Select(group => new { VoteSense = group.Key, Count = group.Count() })
+            .ToDictionaryAsync(x => x.VoteSense, x => x.Count, cancellationToken);
+
+        await cache.SetStringAsync(key, JsonSerializer.Serialize(totals), CacheOptions, cancellationToken);
+
+        return totals;
     }
+
+    // While collisions between other object types in the cache are pretty much impossible,
+    // having a prefix allows quick debugging of the cache.
+    private static string CacheKey(int commentId) => $"CommentLike_{commentId}";
 }

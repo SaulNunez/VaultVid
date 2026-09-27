@@ -59,30 +59,13 @@ namespace VideoHostingService.Migrations
                         .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityByDefaultColumn),
                     Name = table.Column<string>(type: "text", nullable: false),
                     Description = table.Column<string>(type: "text", nullable: false),
+                    UserId = table.Column<string>(type: "text", nullable: false),
                     CreatedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
                     EditedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
                 },
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_Playlists", x => x.Id);
-                });
-
-            migrationBuilder.CreateTable(
-                name: "Videos",
-                columns: table => new
-                {
-                    Id = table.Column<Guid>(type: "uuid", nullable: false),
-                    PublicId = table.Column<Guid>(type: "uuid", nullable: false),
-                    Title = table.Column<string>(type: "text", nullable: false),
-                    Description = table.Column<string>(type: "text", nullable: false),
-                    ObjectName = table.Column<string>(type: "text", nullable: false),
-                    ThumbnailLocation = table.Column<string>(type: "text", nullable: false),
-                    CreatedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
-                    EditedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_Videos", x => x.Id);
                 });
 
             migrationBuilder.CreateTable(
@@ -192,6 +175,38 @@ namespace VideoHostingService.Migrations
                 });
 
             migrationBuilder.CreateTable(
+                name: "Videos",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uuid", nullable: false),
+                    PublicId = table.Column<Guid>(type: "uuid", nullable: false),
+                    Title = table.Column<string>(type: "text", nullable: false),
+                    Description = table.Column<string>(type: "text", nullable: false),
+                    ObjectName = table.Column<string>(type: "text", nullable: true),
+                    ThumbnailLocation = table.Column<string>(type: "text", nullable: true),
+                    UserId = table.Column<string>(type: "text", nullable: false),
+                    Status = table.Column<int>(type: "integer", nullable: false),
+                    SourceWidth = table.Column<int>(type: "integer", nullable: true),
+                    SourceHeight = table.Column<int>(type: "integer", nullable: true),
+                    DurationSeconds = table.Column<double>(type: "double precision", nullable: true),
+                    MasterPlaylistObjectName = table.Column<string>(type: "text", nullable: true),
+                    ProcessingError = table.Column<string>(type: "text", nullable: true),
+                    ProcessingStartedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
+                    CreatedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
+                    EditedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
+                    PlaylistId = table.Column<int>(type: "integer", nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_Videos", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_Videos_Playlists_PlaylistId",
+                        column: x => x.PlaylistId,
+                        principalTable: "Playlists",
+                        principalColumn: "Id");
+                });
+
+            migrationBuilder.CreateTable(
                 name: "VideoComments",
                 columns: table => new
                 {
@@ -199,6 +214,8 @@ namespace VideoHostingService.Migrations
                         .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityByDefaultColumn),
                     Text = table.Column<string>(type: "text", nullable: false),
                     VideoPosition = table.Column<string>(type: "text", nullable: true),
+                    UserId = table.Column<string>(type: "text", nullable: false),
+                    UserName = table.Column<string>(type: "text", nullable: false),
                     CreatedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
                     VideoId = table.Column<Guid>(type: "uuid", nullable: false)
                 },
@@ -220,7 +237,7 @@ namespace VideoHostingService.Migrations
                     Id = table.Column<int>(type: "integer", nullable: false)
                         .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityByDefaultColumn),
                     VoteSense = table.Column<int>(type: "integer", nullable: false),
-                    UserId = table.Column<Guid>(type: "uuid", nullable: false),
+                    UserId = table.Column<string>(type: "text", nullable: false),
                     CreatedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
                     EditedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
                     VideoId = table.Column<Guid>(type: "uuid", nullable: false)
@@ -237,16 +254,40 @@ namespace VideoHostingService.Migrations
                 });
 
             migrationBuilder.CreateTable(
+                name: "VideoRenditions",
+                columns: table => new
+                {
+                    Id = table.Column<int>(type: "integer", nullable: false)
+                        .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityByDefaultColumn),
+                    VideoId = table.Column<Guid>(type: "uuid", nullable: false),
+                    Width = table.Column<int>(type: "integer", nullable: false),
+                    Height = table.Column<int>(type: "integer", nullable: false),
+                    BandwidthBitsPerSecond = table.Column<int>(type: "integer", nullable: false),
+                    PlaylistObjectName = table.Column<string>(type: "text", nullable: false),
+                    CompletedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_VideoRenditions", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_VideoRenditions_Videos_VideoId",
+                        column: x => x.VideoId,
+                        principalTable: "Videos",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
+                });
+
+            migrationBuilder.CreateTable(
                 name: "CommentLikes",
                 columns: table => new
                 {
                     Id = table.Column<int>(type: "integer", nullable: false)
                         .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityByDefaultColumn),
                     VoteSense = table.Column<int>(type: "integer", nullable: false),
+                    UserId = table.Column<string>(type: "text", nullable: false),
                     CreatedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
                     EditedAt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
-                    CommentId = table.Column<int>(type: "integer", nullable: false),
-                    UserId = table.Column<Guid>(type: "uuid", nullable: false)
+                    CommentId = table.Column<int>(type: "integer", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -297,9 +338,20 @@ namespace VideoHostingService.Migrations
                 unique: true);
 
             migrationBuilder.CreateIndex(
-                name: "IX_CommentLikes_CommentId",
+                name: "IX_CommentLikes_CommentId_UserId",
                 table: "CommentLikes",
-                column: "CommentId");
+                columns: new[] { "CommentId", "UserId" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Playlists_UserId",
+                table: "Playlists",
+                column: "UserId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_VideoComments_UserId",
+                table: "VideoComments",
+                column: "UserId");
 
             migrationBuilder.CreateIndex(
                 name: "IX_VideoComments_VideoId",
@@ -307,9 +359,42 @@ namespace VideoHostingService.Migrations
                 column: "VideoId");
 
             migrationBuilder.CreateIndex(
-                name: "IX_VideoLikes_VideoId",
+                name: "IX_VideoLikes_VideoId_UserId",
                 table: "VideoLikes",
-                column: "VideoId");
+                columns: new[] { "VideoId", "UserId" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_VideoRenditions_VideoId_Height",
+                table: "VideoRenditions",
+                columns: new[] { "VideoId", "Height" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Videos_CreatedAt",
+                table: "Videos",
+                column: "CreatedAt");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Videos_PlaylistId",
+                table: "Videos",
+                column: "PlaylistId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Videos_PublicId",
+                table: "Videos",
+                column: "PublicId",
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Videos_Status",
+                table: "Videos",
+                column: "Status");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_Videos_UserId",
+                table: "Videos",
+                column: "UserId");
         }
 
         /// <inheritdoc />
@@ -334,10 +419,10 @@ namespace VideoHostingService.Migrations
                 name: "CommentLikes");
 
             migrationBuilder.DropTable(
-                name: "Playlists");
+                name: "VideoLikes");
 
             migrationBuilder.DropTable(
-                name: "VideoLikes");
+                name: "VideoRenditions");
 
             migrationBuilder.DropTable(
                 name: "AspNetRoles");
@@ -350,6 +435,9 @@ namespace VideoHostingService.Migrations
 
             migrationBuilder.DropTable(
                 name: "Videos");
+
+            migrationBuilder.DropTable(
+                name: "Playlists");
         }
     }
 }
